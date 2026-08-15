@@ -1,0 +1,500 @@
+---
+title: "Renewable Energy Infrastructure Overlap Report"
+output: pdf_document
+params:
+  study_name: NA
+  track_results: NA
+  track_points: NA
+  wind_pts: NA
+  solar_polys: NA
+  buffer_distance_m: NA
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(dplyr)
+library(ggplot2)
+library(sf)
+library(patchwork)
+
+res <- params$track_results
+n_tracks_total <- if (!is.null(res) && nrow(res) > 0) length(unique(res$track_id)) else 0
+```
+
+```{r table-helpers}
+# Plain formatted number, comma-separated if requested, NA -> "-". Used by
+# the highlights section and any spot that needs a formatted value outside
+# of a table (tables themselves use knitr::kable's own digits/format.args,
+# not this).
+plain_num <- function(x, digits = 0, big_mark = "") {
+  ifelse(is.na(x), "-",
+         formatC(round(x, digits), format = "f", digits = digits, big.mark = big_mark))
+}
+
+# Plain "Yes"/"No"/"-" for a logical column.
+yn <- function(x) ifelse(is.na(x), "-", ifelse(x, "Yes", "No"))
+
+# Human-readable version of a raw Movebank field name (e.g.
+# "height_above_ground_level" -> "height above ground level").
+pretty_field_name <- function(x) ifelse(is.na(x), "-", gsub("_", " ", x))
+
+na_dash <- function(x) ifelse(is.na(x), "-", x)
+```
+
+## Study
+
+**Study name:** `r ifelse(is.na(params$study_name), "(not available)", params$study_name)`
+
+**Overlap buffer used:** `r params$buffer_distance_m` m
+
+**Number of tracks assessed:** `r nrow(res)`
+
+**Taxa present:** `r if (all(is.na(res$taxon))) "(not available)" else paste(sort(unique(na.omit(res$taxon))), collapse = ", ")`
+
+## Data quality summary
+
+```{r quality-table}
+quality_display <- res %>%
+  mutate(
+    pct_days_monitored = pmin(100, 100 * n_days_monitored / duration_days)
+  ) %>%
+  transmute(
+    `Track ID` = track_id,
+    `Taxon` = na_dash(taxon),
+    `N locations` = n_locations,
+    `Duration (days)` = duration_days,
+    `Days monitored` = n_days_monitored,
+    `Days monitored (%)` = pct_days_monitored,
+    `Median fix interval (h)` = median_fix_interval_hours
+  )
+
+knitr::kable(
+  quality_display, booktabs = TRUE, format.args = list(big.mark = ","),
+  digits = c(0, 0, 0, 1, 0, 0, 1)
+)
+```
+
+*"Days monitored" is the count of distinct calendar days represented by the
+point set used for the infrastructure overlap test below (the same set
+`enable_thinning`, if on, would subsample); "Days monitored (%)" is that
+count as a percentage of "Duration (days)," so a track sampled sparsely or
+with large data gaps relative to its own start/end dates will show up
+lower here. This App does not apply a fixed pass/fail quality
+threshold -- what counts as sufficient data for a follow-up impact
+analysis depends on the taxon and research question. Use these metrics,
+together with the exposure metrics below, to make that judgment for your
+own study.*
+
+## Key exposure highlights
+
+```{r highlights, results='asis'}
+if (nrow(res) > 0) {
+  pct_wind_overlap  <- 100 * mean(res$overlaps_wind, na.rm = TRUE)
+  pct_solar_overlap <- 100 * mean(res$overlaps_solar, na.rm = TRUE)
+  n_wind_overlap    <- sum(res$overlaps_wind, na.rm = TRUE)
+  n_solar_overlap   <- sum(res$overlaps_solar, na.rm = TRUE)
+
+  cat(sprintf(
+    "- **%.0f%%** of tracks (%d of %d) came within the buffer of at least one **wind turbine** at some point (point-confirmed or interpolated path).\n",
+    pct_wind_overlap, n_wind_overlap, nrow(res)
+  ))
+  cat(sprintf(
+    "- **%.0f%%** of tracks (%d of %d) came within the buffer of at least one **solar array** at some point.\n",
+    pct_solar_overlap, n_solar_overlap, nrow(res)
+  ))
+
+  top_wind_idx <- which.max(res$pct_wind_points_in_buffer)
+  if (length(top_wind_idx) > 0 && !is.na(res$pct_wind_points_in_buffer[top_wind_idx]) &&
+      res$pct_wind_points_in_buffer[top_wind_idx] > 0) {
+    cat(sprintf(
+      "- Track **%s** spent the most time near **wind** infrastructure: **%.0f%%** of its tested fixes fell within the buffer, across **%s** separate visit(s), longest lasting **%.1f h**.\n",
+      res$track_id[top_wind_idx], res$pct_wind_points_in_buffer[top_wind_idx],
+      plain_num(res$n_wind_visit_bouts[top_wind_idx], 0),
+      ifelse(is.na(res$wind_longest_buffer_bout_hours[top_wind_idx]), 0,
+             res$wind_longest_buffer_bout_hours[top_wind_idx])
+    ))
+  }
+
+  top_solar_idx <- which.max(res$pct_solar_points_in_buffer)
+  if (length(top_solar_idx) > 0 && !is.na(res$pct_solar_points_in_buffer[top_solar_idx]) &&
+      res$pct_solar_points_in_buffer[top_solar_idx] > 0) {
+    cat(sprintf(
+      "- Track **%s** spent the most time near **solar** infrastructure: **%.0f%%** of its tested fixes fell within the buffer, across **%s** separate visit(s), longest lasting **%.1f h**.\n",
+      res$track_id[top_solar_idx], res$pct_solar_points_in_buffer[top_solar_idx],
+      plain_num(res$n_solar_visit_bouts[top_solar_idx], 0),
+      ifelse(is.na(res$solar_longest_buffer_bout_hours[top_solar_idx]), 0,
+             res$solar_longest_buffer_bout_hours[top_solar_idx])
+    ))
+  }
+
+  if (n_wind_overlap == 0 && n_solar_overlap == 0) {
+    cat("- No tracks in this study showed any overlap with the checked infrastructure.\n")
+  }
+} else {
+  cat("No tracks were assessed in this run.")
+}
+```
+
+```{r exposure-bar-chart, fig.width=7, fig.height=max(3, 0.35 * n_tracks_total + 1)}
+exposure_long <- dplyr::bind_rows(
+  res %>% transmute(track_id, Infrastructure = "Wind", pct = pct_wind_points_in_buffer),
+  res %>% transmute(track_id, Infrastructure = "Solar", pct = pct_solar_points_in_buffer)
+) %>%
+  filter(!is.na(pct))
+
+if (nrow(exposure_long) > 0) {
+  ggplot(exposure_long, aes(x = reorder(track_id, pct), y = pct, fill = Infrastructure)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+    coord_flip() +
+    scale_fill_manual(values = c(Wind = "#4C72B0", Solar = "#DD8452")) +
+    labs(x = NULL, y = "% of tested fixes within buffer",
+         title = "Exposure intensity by track") +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "bottom")
+} else {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "No exposure-intensity data available for this chart") +
+    theme_void()
+}
+```
+
+## Infrastructure overlap summary
+
+Overlap evidence comes in two kinds: **point-confirmed** (a recorded GPS
+fix actually fell within the buffer -- direct evidence) and **track-only**
+(the interpolated path between two consecutive fixes passed within the
+buffer, but neither fix itself did -- inferred, not confirmed, and most
+relevant when fix intervals are coarse). "N turbines"/"N arrays" below
+combines both kinds (any facility with either type of evidence); the
+exposure-intensity columns (points/days/visits/distance) are
+**point-confirmed only**, since a "visit" or "day spent nearby" should
+reflect an actual recorded detection, not just an inferred path crossing.
+
+### Wind
+
+```{r overlap-table-wind, results='asis'}
+wind_display <- res %>%
+  transmute(
+    `Track ID` = track_id,
+    `Overlap?` = yn(overlaps_wind),
+    `N turbines` = n_turbines_overlap,
+    `Pts in buffer (%)` = pct_wind_points_in_buffer,
+    `Days in buffer (%)` = pct_wind_days_in_buffer,
+    `N visits` = n_wind_visit_bouts,
+    `Longest visit (h)` = wind_longest_buffer_bout_hours,
+    `Nearest (m)` = nearest_turbine_dist_m,
+    `Median dist (m)` = wind_dist_median_m,
+    `Timing` = na_dash(wind_temporal_relation)
+  )
+
+# \small/\normalsize are base LaTeX font-size commands (no package needed),
+# used here (instead of kableExtra's scale_down) just to give this
+# 10-column table a bit more room on the page.
+cat("\\small\n\n")
+print(knitr::kable(
+  wind_display, booktabs = TRUE, format.args = list(big.mark = ","),
+  digits = c(0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
+))
+cat("\n\n\\normalsize\n\n")
+```
+
+*"Pts/Days in buffer (%)" are percentages of the point set tested for
+overlap (see the quality-summary note above for what that set is); "Median
+dist" is the median distance to the nearest turbine across ALL fixes (not
+just the single closest approach shown in "Nearest"), reflecting how close
+the track ranges *typically*, not only at its closest point. Full detail
+(including mean distance and buffer-specific fix interval) is in the CSV
+artifact.*
+
+```{r height-table, results='asis'}
+height_used <- "wind_height_field_used" %in% names(res) && any(!is.na(res$wind_height_field_used))
+
+if (height_used) {
+  cat("**Height relative to turbines** (points within the horizontal buffer only -- see README's Height analysis section for the full methodology and its limits)\n\n")
+
+  height_display <- res %>%
+    mutate(pct_rotor_zone = ifelse(n_wind_points_in_buffer > 0,
+                                    100 * n_wind_points_in_rotor_zone / n_wind_points_in_buffer,
+                                    NA_real_)) %>%
+    transmute(
+      `Track ID` = track_id,
+      `Height field used` = pretty_field_name(wind_height_field_used),
+      `True AGL?` = yn(wind_height_is_agl),
+      `N in rotor zone` = n_wind_points_in_rotor_zone,
+      `In rotor zone (%)` = pct_rotor_zone,
+      `Min height (m)` = wind_height_min_m,
+      `Median height (m)` = wind_height_median_m,
+      `Max height (m)` = wind_height_max_m
+    )
+
+  cat("\\small\n\n")
+  print(knitr::kable(
+    height_display, booktabs = TRUE,
+    digits = c(0, 0, 0, 0, 0, 0, 0, 0)
+  ))
+  cat("\n\n\\normalsize\n\n")
+
+  cat("\n\n*\"In rotor zone (%)\" is the percentage of buffer-zone fixes falling within a nearby turbine's rotor-swept height range, and (like \"N in rotor zone\") is only ever populated when \"True AGL?\" is Yes -- otherwise height is reported for context only, since ellipsoid/mean-sea-level height cannot be safely compared to a ground-relative hazard zone without a ground-elevation correction this App does not perform.*\n")
+}
+```
+
+### Solar
+
+```{r overlap-table-solar, results='asis'}
+solar_display <- res %>%
+  transmute(
+    `Track ID` = track_id,
+    `Overlap?` = yn(overlaps_solar),
+    `N arrays` = n_solar_arrays_overlap,
+    `Pts in buffer (%)` = pct_solar_points_in_buffer,
+    `Days in buffer (%)` = pct_solar_days_in_buffer,
+    `N visits` = n_solar_visit_bouts,
+    `Longest visit (h)` = solar_longest_buffer_bout_hours,
+    `Nearest (m)` = nearest_solar_dist_m,
+    `Median dist (m)` = solar_dist_median_m,
+    `Timing` = na_dash(solar_temporal_relation)
+  )
+
+cat("\\small\n\n")
+print(knitr::kable(
+  solar_display, booktabs = TRUE, format.args = list(big.mark = ","),
+  digits = c(0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
+))
+cat("\n\n\\normalsize\n\n")
+```
+
+*Timing categories: "pre-operational" (tracking entirely before the facility's
+operational year), "post-operational" (entirely after), "spanning" (before
+and after), "mixed" (track overlaps multiple facilities with different
+operational years).*
+
+## Map
+
+```{r map-setup}
+# wind_pts/solar_polys arrive in whatever the App's working CRS was
+# (Conus Albers when solar was checked, otherwise a local UTM zone) --
+# reproject everything to WGS84 once, here, for plotting.
+wind_wgs84 <- if (!is.null(params$wind_pts) && nrow(params$wind_pts) > 0) {
+  sf::st_transform(params$wind_pts, 4326)
+} else NULL
+
+solar_wgs84 <- if (!is.null(params$solar_polys) && nrow(params$solar_polys) > 0) {
+  sf::st_transform(params$solar_polys, 4326)
+} else NULL
+
+tracks_wgs84 <- if (!is.null(params$track_points) && nrow(params$track_points) > 0) {
+  params$track_points
+} else NULL
+
+# Build one LINESTRING per track from tracks_wgs84's points, relying on
+# RFunction.R having already sorted them chronologically before thinning --
+# a scattered cloud of same-colored points is very hard to read as a route
+# once a dense infrastructure layer (e.g. thousands of turbines) is drawn
+# underneath it; a connected line reads immediately as "this is where the
+# animal went," even against a busy backdrop. Tracks with fewer than 2
+# points can't form a line and are simply skipped here (they still show up
+# via the point layer, which is always drawn in addition to this one).
+build_track_lines <- function(pts_sf) {
+  if (is.null(pts_sf) || nrow(pts_sf) == 0) return(NULL)
+  ids <- unique(pts_sf$track_id)
+  lines <- lapply(ids, function(tid) {
+    sub <- pts_sf[pts_sf$track_id == tid, ]
+    if (nrow(sub) < 2) return(NULL)
+    coords <- sf::st_coordinates(sub)[, c("X", "Y"), drop = FALSE]
+    sf::st_sfc(sf::st_linestring(coords), crs = sf::st_crs(sub))
+  })
+  keep <- !vapply(lines, is.null, logical(1))
+  if (!any(keep)) return(NULL)
+  sf::st_sf(track_id = ids[keep], geometry = do.call(c, lines[keep]))
+}
+
+tracks_lines_wgs84 <- build_track_lines(tracks_wgs84)
+
+# A handful of evenly-spaced tick breaks (rather than each panel's default,
+# which for a narrow-extent track can pack in enough decimal-degree labels
+# to visually overlap) -- applied to every map below via
+# scale_x/y_continuous(), which coord_sf() still respects.
+few_breaks <- function(n = 3) scales::breaks_pretty(n = n)
+
+# Crop a layer to a bbox-derived extent, tolerating empty results/edge cases
+# rather than letting a cosmetic map crop fail the whole report render.
+safe_crop <- function(x, extent) {
+  if (is.null(x) || nrow(x) == 0) return(NULL)
+  tryCatch(sf::st_crop(x, extent), error = function(e) NULL)
+}
+
+# Build a bbox-derived extent (WGS84) around a set of points, with a margin
+# so points aren't plotted flush against the figure edge. Falls back to a
+# fixed minimum margin for single-point or very tight tracks.
+bbox_extent <- function(pts, margin_frac = 0.15, min_margin_deg = 0.1) {
+  bbox <- sf::st_bbox(pts)
+  margin_x <- max(min_margin_deg, diff(bbox[c("xmin", "xmax")]) * margin_frac)
+  margin_y <- max(min_margin_deg, diff(bbox[c("ymin", "ymax")]) * margin_frac)
+  sf::st_as_sfc(bbox + c(-margin_x, -margin_y, margin_x, margin_y), crs = 4326)
+}
+
+# Crop the infrastructure layers to the study's actual extent for the
+# overview map -- wind_pts/solar_polys as received here can cover a much
+# larger area than any single study (solar_polys in particular is always
+# the full nationwide GM-SEUS extract, not pre-cropped to the study).
+overview_extent <- if (!is.null(tracks_wgs84)) bbox_extent(tracks_wgs84) else NULL
+wind_overview  <- if (!is.null(overview_extent)) safe_crop(wind_wgs84, overview_extent) else wind_wgs84
+solar_overview <- if (!is.null(overview_extent)) safe_crop(solar_wgs84, overview_extent) else solar_wgs84
+
+# Per-track maps are paginated (see map-per-track below) into fixed-size
+# groups rather than crammed into one giant image -- a single grid sized to
+# fit however many tracks the study has would just get scaled down to fit
+# the page regardless of how tall it's asked to be, so panels in a
+# large study (e.g. 50+ individuals) would shrink to illegible thumbnails.
+# Splitting into fixed-size pages keeps panel size legible and consistent
+# no matter how many tracks the study has -- more tracks just means more
+# pages, not smaller panels.
+tracks_per_page <- 12
+ncol_per_page <- 3
+```
+
+```{r map-overview, fig.width=7, fig.height=6}
+p <- ggplot()
+has_layer <- FALSE
+
+if (!is.null(solar_overview) && nrow(solar_overview) > 0) {
+  p <- p + geom_sf(data = solar_overview, fill = "#DD8452", color = NA, alpha = 0.5)
+  has_layer <- TRUE
+}
+if (!is.null(wind_overview) && nrow(wind_overview) > 0) {
+  # Turbine markers are deliberately tiny and semi-transparent -- a dense
+  # wind corridor can mean tens of thousands of points in view at once
+  # (e.g. a wide-ranging migratory study), and at normal point size/opacity
+  # they blot out everything else on the map, tracks included. Small +
+  # translucent still reads clearly as "lots of turbines here" without
+  # drowning out the animal's actual path.
+  p <- p + geom_sf(data = wind_overview, color = "#4C72B0", shape = 17,
+                    size = 0.3, alpha = 0.35, stroke = 0)
+  has_layer <- TRUE
+}
+if (!is.null(tracks_lines_wgs84) && nrow(tracks_lines_wgs84) > 0) {
+  p <- p + geom_sf(data = tracks_lines_wgs84, aes(color = track_id), linewidth = 0.6)
+  has_layer <- TRUE
+}
+if (!is.null(tracks_wgs84) && nrow(tracks_wgs84) > 0) {
+  p <- p + geom_sf(data = tracks_wgs84, aes(color = track_id), size = 0.4, alpha = 0.8) +
+    scale_color_viridis_d(option = "turbo")
+  has_layer <- TRUE
+}
+
+if (has_layer) {
+  p + theme_minimal(base_size = 11) +
+    scale_x_continuous(breaks = few_breaks(4)) +
+    scale_y_continuous(breaks = few_breaks(4)) +
+    labs(title = "Tracks with nearby wind turbines (triangles) and solar arrays (polygons)",
+         color = "Track ID") +
+    theme(legend.position = "bottom")
+} else {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "No data available for map") +
+    theme_void()
+}
+```
+
+*If tracks are geographically dispersed (e.g. separate breeding/wintering
+areas, or multiple distinct individuals/locations), this overview will span
+that full extent -- see the per-track maps below for a zoomed view of each
+individual's own local area.*
+
+### Individual track maps
+
+Each panel below is independently zoomed to its own track's extent,
+condensed into a single grid (via `patchwork`) rather than one page per
+individual -- this keeps the report a manageable length for studies with
+many tracked individuals (e.g. large migratory-bird studies) while still
+giving each track its own local view. (Note: `facet_wrap(scales = "free")`
+can't be used here -- ggplot2's `coord_sf()`, which every `geom_sf()` plot
+uses, doesn't support per-panel free scales within a single `facet_wrap()`
+call, so each panel below is built as its own fully independent plot with
+its own zoom, then composed into a grid, rather than one shared faceted
+plot.) The animal's path is drawn as a connected black line rather than
+scattered points, so it stays legible even over a dense nearby
+infrastructure layer; wind turbines in particular are deliberately drawn
+small and translucent, since a busy wind-development corridor can put
+hundreds of them in a single panel. Panels are paginated into fixed-size
+groups (a consistent number of panels per page) rather than one giant grid
+sized to fit the whole study -- otherwise a large study (e.g. 50+
+individuals) would still get squeezed onto a single page and every panel
+would shrink to an illegible thumbnail; pagination keeps panel size
+legible and consistent regardless of how many tracks the study has, at the
+cost of more pages for larger studies.
+
+```{r map-per-track, fig.width=9, fig.height=1 + 3.2 * ceiling(tracks_per_page / ncol_per_page), results='asis'}
+if (!is.null(tracks_wgs84) && nrow(tracks_wgs84) > 0) {
+  track_ids_facet <- unique(tracks_wgs84$track_id)
+
+  # One fully independent ggplot per track (own coord_sf, own zoom extent)
+  # -- see the note above on why this can't be a single faceted plot.
+  build_one_track_plot <- function(tid) {
+    track_i <- tracks_wgs84[tracks_wgs84$track_id == tid, ]
+    line_i  <- if (!is.null(tracks_lines_wgs84)) {
+      tracks_lines_wgs84[tracks_lines_wgs84$track_id == tid, ]
+    } else NULL
+    extent_i <- bbox_extent(track_i, margin_frac = 0.25, min_margin_deg = 0.05)
+
+    solar_i <- safe_crop(solar_wgs84, extent_i)
+    wind_i  <- safe_crop(wind_wgs84, extent_i)
+
+    taxon_i <- res$taxon[res$track_id == tid][1]
+    title_i <- if (!is.na(taxon_i) && nzchar(taxon_i)) paste0(tid, " (", taxon_i, ")") else tid
+
+    p_i <- ggplot()
+    if (!is.null(solar_i) && nrow(solar_i) > 0) {
+      p_i <- p_i + geom_sf(data = solar_i, fill = "#DD8452", color = NA, alpha = 0.5)
+    }
+    if (!is.null(wind_i) && nrow(wind_i) > 0) {
+      # Small + translucent, same reasoning as the overview map -- a
+      # zoomed-in panel over a dense wind corridor can still have hundreds
+      # of nearby turbines, which at full size/opacity would bury the
+      # track underneath.
+      p_i <- p_i + geom_sf(data = wind_i, color = "#4C72B0", shape = 17,
+                            size = 0.5, alpha = 0.4, stroke = 0)
+    }
+    if (!is.null(line_i) && nrow(line_i) > 0) {
+      p_i <- p_i + geom_sf(data = line_i, color = "black", linewidth = 0.6)
+    }
+
+    p_i +
+      geom_sf(data = track_i, color = "black", size = 0.4, alpha = 0.8) +
+      scale_x_continuous(breaks = few_breaks(3)) +
+      scale_y_continuous(breaks = few_breaks(3)) +
+      labs(title = title_i) +
+      theme_minimal(base_size = 9) +
+      theme(axis.text = element_text(size = 6),
+            axis.text.x = element_text(angle = 45, hjust = 1),
+            plot.title = element_text(size = 9))
+  }
+
+  track_plots <- lapply(track_ids_facet, build_one_track_plot)
+
+  # Paginate: tracks_per_page panels per page (see map-setup for why), each
+  # page printed as its own figure with a \newpage (base LaTeX, no package
+  # needed) between pages -- results='asis' is required for that raw
+  # command to pass through rather than being escaped, and for print() to
+  # actually emit each page's plot inside this loop (only a chunk's final
+  # unassigned expression auto-prints otherwise).
+  n_total <- length(track_plots)
+  page_starts <- seq(1, n_total, by = tracks_per_page)
+
+  for (start in page_starts) {
+    end <- min(start + tracks_per_page - 1, n_total)
+    print(patchwork::wrap_plots(track_plots[start:end], ncol = ncol_per_page))
+    if (end < n_total) cat("\n\n\\newpage\n\n")
+  }
+} else {
+  cat("No track location data available.")
+}
+```
+
+## Data sources
+
+- **Wind:** U.S. Wind Turbine Database (USWTDB), USGS/LBNL/American Clean
+  Power Association. CC BY 3.0.
+- **Solar:** Ground-Mounted Solar Energy in the United States (GM-SEUS),
+  Stid et al., Michigan State University. CC BY 4.0 (v2.0, Zenodo record
+  19581821).

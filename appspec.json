@@ -1,77 +1,109 @@
 {
-  "version": "1.2",
+  "version": "0.1",
   "settings": [
     {
-      "id": "sdk",
-      "name": "The name of the MoveApps SDK",
-      "description": "Showcase requesting a string input from the users of your app.",
-      "defaultValue": "MoveApps SDK",
-      "type": "STRING"
-    },
-    {
-      "id": "year",
-      "name": "The year",
-      "description": "Insert description for the year setting setting",
-      "defaultValue": 2022,
+      "id": "buffer_distance_m",
+      "name": "Overlap buffer distance (m)",
+      "description": "Distance in meters around each turbine/solar array used to define spatial 'overlap' with the tracking data. Typical displacement-study values range from a few hundred meters to a few kilometers depending on taxon.",
+      "defaultValue": 1000,
       "type": "INTEGER"
     },
     {
-      "id": "auxiliary-file-a",
-      "name": "Personalization",
-      "description": "You can personalize the app by providing a file",
-      "type": "USER_FILE"
+      "id": "include_wind",
+      "name": "Check wind turbine overlap",
+      "description": "Whether to check the tracking data against the USGS/LBNL/ACP U.S. Wind Turbine Database (USWTDB).",
+      "defaultValue": true,
+      "type": "CHECKBOX"
+    },
+    {
+      "id": "include_solar",
+      "name": "Check solar array overlap",
+      "description": "Whether to check the tracking data against the Ground-Mounted Solar Energy in the United States (GM-SEUS) dataset.",
+      "defaultValue": true,
+      "type": "CHECKBOX"
+    },
+    {
+      "id": "query_region_mode",
+      "name": "Infrastructure query region",
+      "description": "How to define the search region used to fetch candidate infrastructure. 'bbox' uses one buffered bounding box for the whole dataset (simple, but can be very large/wasteful for wide-ranging or migratory tracks). 'trajectory' queries with one buffered bounding box per track instead, merging results -- tighter for wide-ranging or migratory data, at the cost of more API calls.",
+      "type": "RADIOBUTTONS",
+      "defaultValue": "bbox",
+      "options": [
+        { "value": "bbox", "displayText": "Single bounding box for the whole study" },
+        { "value": "trajectory", "displayText": "One bounding box per track" }
+      ]
+    },
+    {
+      "id": "enable_thinning",
+      "name": "Thin locations for overlap test on very large tracks",
+      "description": "For extremely high-frequency/long-duration tracks, optionally subsample locations before the infrastructure overlap test (quality metrics always use the full, unthinned track regardless of this setting). Off by default, since thinning trades a small chance of missing a brief close pass between two fixes for speed.",
+      "defaultValue": false,
+      "type": "CHECKBOX"
+    },
+    {
+      "id": "thinning_max_locations",
+      "name": "Max locations per track for overlap test (if thinning enabled)",
+      "description": "When thinning is enabled, tracks with more locations than this are evenly subsampled down to approximately this many points before the overlap test.",
+      "defaultValue": 5000,
+      "type": "INTEGER"
+    },
+    {
+      "id": "include_height_analysis",
+      "name": "Analyze location height relative to wind turbines",
+      "description": "Wind only. If the input data includes a recognized Movebank height field (height_above_ground_level, height_above_mean_sea_level, or height_above_ellipsoid), reports the height of locations near turbines. Only height_above_ground_level (true height above ground) enables an actual rotor-swept-zone pass/fail classification; the other fields are reported as informational context only, since they cannot be safely compared to a ground-relative hazard zone without a ground-elevation correction this App does not perform.",
+      "defaultValue": false,
+      "type": "CHECKBOX"
+    }
+  ],
+  "providedAppFiles": [
+    {
+      "settingId": "gmseus_arrays",
+      "from": "data/auxiliary/user-files/provided-app-files/gmseus_arrays/"
+    },
+    {
+      "settingId": "report_template",
+      "from": "data/auxiliary/user-files/provided-app-files/report_template/"
     }
   ],
   "dependencies": {
     "R": [
-      {
-        "name": "lubridate"
-      },
-      {
-        "remotes": "install_git('https://gitlab.com/bartk/move2.git')"
-      }
+      { "name": "move2" },
+      { "name": "sf" },
+      { "name": "dplyr" },
+      { "name": "purrr" },
+      { "name": "tibble" },
+      { "name": "httr2" },
+      { "name": "rmarkdown" },
+      { "name": "knitr" },
+      { "name": "ggplot2" },
+      { "name": "patchwork" },
+      { "name": "scales" }
     ]
   },
-  "providedAppFiles": [
-    {
-      "settingId": "auxiliary-file-a",
-      "from": "data/auxiliary/user-files/provided-app-files/auxiliary-file-a/sample.txt"
-    }
-  ],
   "license": {
     "key": "MIT"
   },
   "language": "eng",
   "keywords": [
-    "example",
-    "template"
+    "AMORE",
+    "renewable energy",
+    "wind energy",
+    "solar energy",
+    "infrastructure overlap",
+    "data screening",
+    "USWTDB",
+    "GM-SEUS"
   ],
   "people": [
     {
-      "firstName": "Charles",
-      "middleInitials": null,
-      "lastName": "Darwin",
-      "email": "creator@example.com",
-      "roles": [
-        "author",
-        "creator"
-      ],
-      "orcid": null,
-      "affiliation": null,
+      "firstName": "Michael",
+      "middleInitials": "O.",
+      "lastName": "Levin",
+      "email": "brighthabitatresearch@gmail.com",
+      "roles": ["author", "creator"],
+      "orcid": "0000-0003-4831-2567",
+      "affiliation": "Bright Habitat Research",
       "affiliationRor": null
-    }
-  ],
-  "funding": [
-    {
-      "name": "funder name",
-      "comment": "grant for App"
-    }
-  ],
-  "references": [
-    {
-      "type": "IsDescribedBy",
-      "note": "Darwin, C. 1900. The creation. Journal XY. 1-2",
-      "url": "https://anylink.xyz"
     }
   ]
 }

@@ -1,4 +1,10 @@
 {
     "sdk": "MoveApps R SDK",
-    "year": 2014
+    "buffer_distance_m": 1000,
+    "include_wind": true,
+    "include_solar": true,
+    "query_region_mode": "bbox",
+    "enable_thinning": false,
+    "thinning_max_locations": 5000,
+    "include_height_analysis": false
 }
