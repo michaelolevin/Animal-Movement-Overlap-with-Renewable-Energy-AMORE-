@@ -17,16 +17,7 @@ USWTDB_QUERY_URL <- "https://energy.usgs.gov/api/uswtdb/v1/turbines"
 
 # GM-SEUS array-level layer, shipped as a MoveApps fixed auxiliary file
 # (settingId "gmseus_arrays" in appspec.json's providedAppFiles, resolved
-# at runtime via getAppFilePath() -- see fetch_gmseus() below) rather
-# than being read from a hardcoded repo-relative path. This is a small
-# extract (permitted under GM-SEUS v2.0's CC-BY 4.0 license, with
-# attribution -- see README), NOT the full ~3.7GB Zenodo release; it's a
-# slimmed-down copy of just the array layer/fields this App needs,
-# produced by data-raw/extract_gmseus_arrays.R. Regenerate it from a fresh
-# GM-SEUS release using that script if you need to update the source data,
-# then replace the file committed under
-# data/auxiliary/user-files/provided-app-files/gmseus_arrays/ (see README's
-# Auxiliary files section).
+# at runtime via getAppFilePath()).
 # Source: https://zenodo.org/records/19581821 (Stid et al., CC-BY 4.0)
 GMSEUS_AUX_SETTING_ID <- "gmseus_arrays"
 
@@ -62,11 +53,8 @@ rFunction <- function(data,
   )
 
   # Per-track taxon, pulled from Movebank's standard reference-data columns.
-  # "individual_taxon_canonical_name" is the standard Movebank field for
-  # this; a couple of variant names are checked as a fallback since this
-  # hasn't been verified against every possible study's exact column
-  # naming -- if none match, taxon comes back NA rather than erroring the
-  # whole run.
+  # "individual_taxon_canonical_name" is the standard Movebank field;
+  # several variant names are checked as a fallback
   track_taxa <- tryCatch({
     track_data_tbl <- move2::mt_track_data(data)
     tid_col <- move2::mt_track_id_column(data)
@@ -134,16 +122,7 @@ rFunction <- function(data,
   data_sf <- sf::st_as_sf(data)
 
   # Filter out locations with missing/empty coordinates before anything else
-  # touches this data. Real Movebank exports commonly retain rows with
-  # failed or missing GPS fixes rather than dropping them, and sf::st_as_sf()
-  # silently turns those into empty point geometries. A single empty/
-  # degenerate geometry passed into a spatial-index-based predicate (like
-  # st_is_within_distance, used below) can corrupt results for the WHOLE
-  # query, not just that one row -- this was previously causing every solar
-  # array nationwide to spuriously register as "within distance" of tracks
-  # that had even one bad fix. Doing this once, here, means no downstream
-  # calculation (quality metrics, overlap tests) needs its own defensive
-  # check.
+  # touches this data. 
   n_locations_raw <- nrow(data_sf)
   empty_idx <- sf::st_is_empty(data_sf)
   if (any(empty_idx)) {
@@ -161,18 +140,9 @@ rFunction <- function(data,
   #
   # IMPORTANT: when solar is included, use GM-SEUS's own native CRS --
   # NAD83(2011) / Conus Albers, an equal-area projection specifically valid
-  # across the whole contiguous US -- rather than a local UTM zone picked
-  # from the track's centroid. GM-SEUS is a large, geographically dispersed
-  # nationwide dataset; force-reprojecting all of it into a single local UTM
-  # zone can produce severely distorted or outright invalid geometry for
-  # anything far from that zone's central meridian (UTM/Transverse Mercator
-  # only behaves well within a few degrees of its own meridian). This
-  # previously caused every array nationwide to spuriously register as
-  # "within distance" of tracks located far from the chosen zone, because
-  # some reprojected geometries became degenerate. Track and turbine data
-  # are comparatively small and localized, so it's the transform direction
-  # that should flip: transform THEM into a nationwide-safe CRS, not the
-  # other way around.
+  # across the whole contiguous US, rather than a local UTM zone picked
+  # from the track's centroid.
+  
   # When solar is excluded, there's no nationwide dataset in play, so a
   # study-local UTM zone remains a fine (and more locally-accurate) choice
   # for wind-only distance calculations.
@@ -200,7 +170,7 @@ rFunction <- function(data,
   #    grounds), at the cost of one API call per track instead of one per
   #    study. For studies with many individuals this means many more calls;
   #    a future enhancement could cluster nearby tracks into shared boxes.
-  # This only affects which turbines are *fetched as candidates* -- the
+  # This only affects which turbines are fetched as candidates. The
   # overlap test itself always uses full-resolution points regardless of
   # this mode (see summarize_infra_overlap).
   query_bboxes_wgs84 <- build_query_bboxes(
@@ -242,8 +212,7 @@ rFunction <- function(data,
   # -------------------------------------------------------------------------
   # Build a lightweight set of track points (WGS84) for the report's map.
   # Thinned per track since full resolution isn't needed for a static PDF
-  # figure -- for a track with tens of thousands of points it'd be slow to
-  # render and visually indistinguishable from a much smaller sample anyway.
+  # figure.
   # -------------------------------------------------------------------------
   track_points_map <- purrr::map_dfr(track_ids, function(tid) {
     pts <- data_proj[move2::mt_track_id(data_proj) == tid, ]
@@ -257,11 +226,6 @@ rFunction <- function(data,
 
   # -------------------------------------------------------------------------
   # Write standardized CSV artifact (one row per track; stacks across studies)
-  #
-  # Per MoveApps' App Output docs, artifacts must be written to the path
-  # returned by appArtifactPath() rather than a bare filename in the
-  # working directory -- that's what makes them show up as downloadable
-  # outputs in the Workflow's Output overview.
   # -------------------------------------------------------------------------
   csv_artifact_path <- appArtifactPath("renewable_overlap_summary.csv")
   utils::write.csv(track_results, file = csv_artifact_path, row.names = FALSE)
@@ -274,8 +238,7 @@ rFunction <- function(data,
     # report_template.Rmd is shipped as a MoveApps fixed auxiliary file
     # (settingId "report_template", declared in appspec.json's
     # providedAppFiles) rather than referenced by a hardcoded repo-relative
-    # path -- resolved at runtime via getAppFilePath(), same
-    # mechanism/rationale as the bundled GM-SEUS extract above.
+    # path, resolved at runtime via getAppFilePath().
     report_template_path <- resolve_app_file("report_template")
     if (is.na(report_template_path) || !file.exists(report_template_path)) {
       stop(paste0(
@@ -289,8 +252,7 @@ rFunction <- function(data,
 
     # rmarkdown::render() takes output_file (a filename) and output_dir
     # separately rather than one combined path, so appArtifactPath()'s
-    # result -- the correct full artifact path/filename per the MoveApps
-    # App Output docs -- is split into those two pieces here.
+    # result is split into those two pieces here.
     pdf_artifact_path <- appArtifactPath("renewable_overlap_report.pdf")
 
     rmarkdown::render(
@@ -338,7 +300,7 @@ suggest_utm_crs <- function(x) {
 
 #' Build the USWTDB search region(s) as a list of bounding boxes (WGS84).
 #' The API only supports column-range filters (xlong/ylat), so a bounding
-#' box -- not an arbitrary polygon -- is the unit of query here.
+#' box is the unit of query.
 #' mode = "bbox": one buffered bbox for the whole dataset.
 #' mode = "trajectory": one buffered bbox per track, queried separately and
 #'   merged/deduplicated by fetch_uswtdb() -- tighter for wide-ranging or
@@ -362,9 +324,7 @@ build_query_bboxes <- function(data_proj, track_ids, mode, buffer_distance_m) {
 #' Query the USWTDB REST API (PostgREST-style; see
 #' https://eerscmap.usgs.gov/uswtdb/api-doc/) for turbines within one or more
 #' bounding boxes, paginating each query and merging/deduplicating results
-#' (by case_id) across boxes. There is no native spatial filter in this API
-#' -- xlong/ylat range filters are the closest equivalent, which is exactly
-#' what a bounding box needs.
+#' (by case_id) across boxes.
 fetch_uswtdb <- function(bboxes_wgs84) {
   logger.info(paste("Querying USWTDB API across", length(bboxes_wgs84), "region(s)"))
 
@@ -422,19 +382,7 @@ fetch_uswtdb_bbox <- function(bbox_wgs84, page_size = 1000) {
   dplyr::bind_rows(pages)
 }
 
-#' Resolve a providedAppFiles settingId to an actual, single file path.
-#'
-#' getAppFilePath()'s exact return contract is genuinely unclear from the
-#' documentation available while writing this: one example uses its result
-#' directly as a file path (`read.csv(getAuxiliaryFilePath("aux_A"))`),
-#' while another concatenates a filename onto it
-#' (`paste0(getAppFilePath("id"), "sample.txt")`), implying it returns the
-#' containing folder instead. Rather than assume either, this helper
-#' handles both: if the resolved path is a directory, it looks inside for
-#' the single non-dotfile it should contain (each providedAppFiles folder
-#' is meant to hold exactly one real file, alongside an optional `.keep`
-#' placeholder -- see README's *Auxiliary files* section); if it's already
-#' a file, it's returned as-is.
+#' Resolve a providedAppFiles settingId to a single file path.
 resolve_app_file <- function(setting_id) {
   path <- getAuxiliaryFilePath(setting_id)
   if (is.na(path) || !nzchar(path)) return(NA_character_)
@@ -457,14 +405,7 @@ resolve_app_file <- function(setting_id) {
 
 #' Load the bundled GM-SEUS array extract. Shipped as a MoveApps fixed
 #' auxiliary file (settingId "gmseus_arrays", declared in appspec.json's
-#' providedAppFiles) rather than a hardcoded repo path, and resolved at
-#' runtime via getAppFilePath() (see resolve_app_file() above for why that
-#' resolution is done defensively) -- this is the platform-supported
-#' mechanism for App-provided (as opposed to user-uploaded) auxiliary data,
-#' and keeps the file's on-disk location an implementation detail of the
-#' MoveApps SDK rather than something this code assumes. Small enough
-#' (~19k features, slimmed to a handful of fields) to read in full every
-#' run rather than needing a spatial pre-filter.
+#' providedAppFiles).
 fetch_gmseus <- function(sdk) {
   logger.info("Loading bundled GM-SEUS array data")
 
@@ -498,22 +439,14 @@ fetch_gmseus <- function(sdk) {
   if (is.null(arrays) || nrow(arrays) == 0) return(NULL)
 
   # GM-SEUS uses -9999 as a missing-data sentinel across many numeric
-  # fields (confirmed present in instYrEst). Left unsanitized, this would
+  # fields (confirmed present in instYrEst). Left unsanitized, this could
   # corrupt classify_temporal_overlap() (a "-9999" operational year would
   # misclassify nearly everything as post-operational) and inflate
   # solar_instYr_confidence_diff into meaningless multi-thousand-year values
   # instead of NA.
   arrays <- sanitize_gmseus_sentinels(arrays, cols = c("instYr", "instYrEst"))
 
-  # Defensive geometry validation. A handful of invalid/empty/degenerate
-  # geometries in this dataset previously caused st_is_within_distance() to
-  # spuriously report EVERY array as "within distance" of every track --
-  # likely because a spatial index (R-tree) built over even a few malformed
-  # bounding boxes can have its pruning logic corrupted for the whole
-  # dataset, not just the bad rows. Repair/drop those here at load time,
-  # regardless of whether the extraction script already tried to (defense
-  # in depth -- a corrupted bundled file should never be able to silently
-  # break every overlap result again).
+  # Defensive geometry validation.
   n_before <- nrow(arrays)
   invalid_idx <- !sf::st_is_valid(arrays) | sf::st_is_empty(arrays)
   if (any(invalid_idx)) {
@@ -561,9 +494,7 @@ classify_temporal_overlap <- function(track_start, track_end, operational_year) 
   }
 }
 
-#' Thin a track's points for the overlap test only (NOT for quality metrics,
-#' which should always reflect the full, untouched data). Systematic/even
-#' subsampling down to approximately max_locations points. This is an
+#' Thin a track's points for the overlap test only. This is an
 #' optional escape hatch for extremely high-frequency, long-duration tracks
 #' where even the indexed overlap test becomes costly -- leave disabled by
 #' default since it trades a small chance of missing a brief close pass
@@ -578,18 +509,6 @@ thin_points_for_overlap <- function(track_pts, max_locations) {
 #' Identify distinct "visit bouts" to a buffer from a chronologically-sorted
 #' sequence of tested fixes and their in-buffer status, to distinguish
 #' repeat visits from one long stay.
-#'
-#' Definition used here: a bout is a maximal run of temporally-consecutive
-#' tested fixes that are each individually within the buffer. A bout ends
-#' the moment a fix in the sequence is recorded OUTSIDE the buffer -- that's
-#' direct evidence the animal left, so the next in-buffer fix (whenever it
-#' occurs) starts a new bout. This is deliberately sequence-based rather
-#' than time-threshold-based: it does not independently split a bout just
-#' because of a large time gap between two in-buffer fixes if no
-#' out-of-buffer fix was recorded in between -- with no fixes recorded
-#' during that gap, there's no direct evidence the animal actually left, so
-#' treating it as one continuous stay is the more conservative reading of
-#' the available data (rather than inventing a time-threshold to split on).
 #'
 #' `in_buffer_sorted` and `timestamps_sorted` must both be pre-sorted into
 #' chronological order and aligned 1:1 (see summarize_track, which sorts
@@ -622,7 +541,7 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
                              thinning_max_locations = 5000, height_field = NA_character_,
                              height_is_agl = NA) {
 
-  # A track can end up with zero rows here if every one of its locations had
+  # A track can end up with zero rows if every one of its locations had
   # missing/empty coordinates and was filtered out upstream (see rFunction).
   # Report it explicitly rather than letting min()/max() on an empty vector
   # crash the whole run.
@@ -663,30 +582,27 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
 
   # Quality metrics above always use the full, unthinned track. Thinning
   # (if enabled) affects both the point-based overlap test and the track
-  # line built below, consistently.
+  # line built below.
   overlap_pts <- if (enable_thinning) {
     thin_points_for_overlap(track_pts, thinning_max_locations)
   } else {
     track_pts
   }
 
-  # Sort chronologically once, here -- track_line, the days-monitored
+  # Sort chronologically once. track_line, the days-monitored
   # count, and the visit-bout detection below all depend on a consistent
   # time order, so this avoids re-sorting (and risking an inconsistent
   # order) in multiple places.
   overlap_pts <- overlap_pts[order(move2::mt_time(overlap_pts)), ]
   overlap_timestamps <- move2::mt_time(overlap_pts)
 
-  # Distinct calendar days represented by the tested point set (post-
-  # thinning if enabled) -- used both to report monitoring coverage and as
-  # the denominator for the wind/solar "days in buffer" percentages below.
+  # Distinct calendar days represented by the tested point set
   n_days_monitored <- length(unique(as.Date(overlap_timestamps)))
 
   # Build the track's chronological path as a line, for the "did the route
   # pass near infrastructure even though no single recorded fix landed in
   # the buffer" test. Requires >= 2 points; a single-fix track has no path
-  # beyond the point itself, so this is left NULL for that case (handled by
-  # summarize_infra_overlap).
+  # beyond the point itself, so this is left NULL for that case.
   track_line <- if (nrow(overlap_pts) >= 2) {
     coords <- sf::st_coordinates(overlap_pts)[, c("X", "Y"), drop = FALSE]
     sf::st_sfc(sf::st_linestring(coords), crs = sf::st_crs(overlap_pts))
@@ -694,10 +610,9 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
     NULL
   }
 
-  # Heights aligned 1:1 with overlap_pts, for the wind height check only
-  # (wind is the clear collision-risk use case; solar ground arrays don't
-  # have an equivalent vertical hazard zone). NULL if height analysis is
-  # off or no recognized height column was found upstream.
+  # Heights aligned 1:1 with overlap_pts, for the wind height check only. 
+  # NULL if height analysis is off or no recognized height column was found 
+  # upstream.
   heights_m <- NULL
   if (!is.na(height_field) && height_field %in% names(overlap_pts)) {
     heights_m <- suppressWarnings(as.numeric(sf::st_drop_geometry(overlap_pts)[[height_field]]))
@@ -716,9 +631,7 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
   # --- Solar ---
   # GM-SEUS's instYr already has gaps backfilled from instYrEst (an
   # independent Landsat-derived estimate); passing instYrEst here surfaces
-  # how much the two diverge, as a soft confidence signal -- not a claim
-  # that instYr is "estimated" vs "sourced," which the data doesn't cleanly
-  # distinguish. No height analysis for solar -- see rationale above.
+  # how much the two diverge, as a soft confidence signal.
   solar_overlap <- summarize_infra_overlap(
     overlap_pts, track_line, solar_polys, buffer_distance_m, year_field = "instYr",
     track_start = track_start, track_end = track_end,
@@ -835,10 +748,7 @@ summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distanc
   if (is.null(infra) || nrow(infra) == 0 || nrow(track_pts) == 0) return(empty)
 
   # Point-based evidence: which infra features have >=1 recorded fix within
-  # the buffer, and how many fixes does that represent overall (a fix
-  # counted once even if it's near multiple infra features, since this
-  # metric answers "how much of the animal's recorded history was inside
-  # the buffer," not "how many feature-fix pairs exist").
+  # the buffer, and how many fixes does that represent overall.
   pts_within <- sf::st_is_within_distance(track_pts, infra, dist = buffer_distance_m)
   n_points_in_buffer <- sum(lengths(pts_within) > 0)
   point_infra_idx <- sort(unique(unlist(pts_within)))
@@ -870,9 +780,7 @@ summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distanc
   }
   if (!is.finite(nearest_dist_m)) nearest_dist_m <- NA_real_
 
-  # Median (not just nearest) distance across ALL tested fixes -- a
-  # complement to nearest_dist_m that reflects typical, not best-case,
-  # proximity across the whole track.
+  # Median distance across ALL tested fixes.
   dist_median_m <- if (length(point_to_nearest_dist) > 0) {
     stats::median(point_to_nearest_dist, na.rm = TRUE)
   } else {

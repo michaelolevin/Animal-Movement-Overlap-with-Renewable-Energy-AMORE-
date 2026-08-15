@@ -2,7 +2,7 @@
 
 MoveApps
 
-Github repository: *github.com/REPLACE-WITH-YOUR-ACCOUNT/AMORE (replace with the actual repository URL before submission)*
+Github repository: *https://github.com/michaelolevin/Animal-Movement-Overlap-with-Renewable-Energy-AMORE-.git*
 
 ## Description
 
@@ -41,12 +41,11 @@ potential workflow.
 
 #### Generality of App usability
 
-This App was developed for any taxonomic group -- the overlap and data-
+This App was developed for any taxonomic group, as the overlap and data-
 quality metrics it computes make no taxon-specific assumptions. The optional
-height-relative-to-turbine analysis (see *Height analysis* below) is most
-relevant for taxa that fly (e.g. birds, bats), since it's meant to help
-assess collision risk with rotor-swept airspace; it is harmless but
-uninformative for taxa that don't move vertically through that space.
+height-relative-to-turbine analysis is most relevant for taxa that fly 
+(e.g. birds, bats), since it's meant to assess collision risk with 
+rotor-swept airspace.
 
 **Geographic scope:** this App is only applicable for datasets collected in
 the **United States**, as both energy infrastructure datasets (USWTDB and
@@ -83,17 +82,13 @@ required to *run* the App. However:
 
 `move2::move2_loc` -- identical to the input; this App is a
 screening/reporting step and does not alter locations, tracks, or
-attributes (see *Changes in output data* below).
+attributes.
 
 ### Artefacts
 
 Both artefacts below are written to the path returned by the MoveApps
 SDK's `appArtifactPath()` function (per the
-[App Output](https://docs.moveapps.org/#/copilot-r-sdk?id=app-output) docs)
-rather than to a bare filename in the working directory -- that's what
-makes them show up as downloadable outputs in the Workflow's Output
-overview. Each is a single file, so no zipping is needed. See *Example
-output* below for a preview of what these look like.
+[App Output](https://docs.moveapps.org/#/copilot-r-sdk?id=app-output) docs).
 
 - `renewable_overlap_summary.csv`: one row per tracked individual, with columns
   for study name, individual ID, taxon, and:
@@ -136,19 +131,13 @@ output* below for a preview of what these look like.
   **Visit bout definition:** a bout is a maximal run of temporally-
   consecutive tested fixes that are each individually within the buffer.
   It ends the moment a fix in the sequence is recorded *outside* the
-  buffer -- direct evidence the animal left -- so distinct bouts reflect
-  repeat visits, while one long stay (even if sampled at a coarse fix
-  interval) stays a single bout. This is deliberately based on recorded
-  evidence rather than an assumed time threshold: if there's a large gap
-  in the data with no fixes recorded at all (in or out of the buffer)
+  buffer, so distinct bouts reflect repeat visits, while one long stay 
+  (even if sampled at a coarse fix interval) stays a single bout.If there's a 
+  large gap in the data with no fixes recorded at all (in or out of the buffer)
   between two in-buffer fixes, that's read as one continuous bout rather
-  than being split, since there's no direct evidence the animal actually
+  than being split as there is no direct evidence the animal actually
   left during an unobserved gap.
 
-  Designed so that outputs from many App runs can be concatenated into a
-  single corpus-wide table for cross-study comparison. If
-  `include_height_analysis` is on, additional wind-specific height columns
-  are included -- see *Height analysis* below.
 - `renewable_overlap_report.pdf`: narrative summary of the study
   (data-quality and exposure-intensity tables, key-highlights callouts,
   and a map of nearby infrastructure, per individual).
@@ -184,7 +173,7 @@ used in `RFunction.R`.*
 - `Analyze location height relative to wind turbines`
   (include_height_analysis): Wind only. If the input data includes a
   recognized Movebank height field, reports the height of locations near
-  turbines -- see *Height analysis* below. Default: `FALSE` (off).
+  turbines. Default: `FALSE` (off).
 
 This App does not expose data-quality pass/fail thresholds as settings --
 it reports the quality metrics for every track (see *Data quality summary*
@@ -195,16 +184,12 @@ to the App user, since that depends on the taxon and research question.
 
 The input data is returned completely unchanged -- no columns are added,
 removed, or modified, and no locations are filtered out of the returned
-object (the internal exclusion of locations with missing/empty coordinates,
-described under *Null or error handling*, only affects this App's own
-overlap/quality calculations, not what's passed on).
+object.
 
-All of this App's results -- overlap flags, distances, temporal
-classifications, and quality metrics -- are written only to the two
+All of this App's results (e.g., overlap flags, distances, temporal
+classifications, and quality metrics) are written only to the two
 artefacts described above (`renewable_overlap_summary.csv` and
-`renewable_overlap_report.pdf`), not to the tracking data itself. This
-makes the App a pure screening/reporting step that's safe to insert
-anywhere in a Workflow without affecting what downstream Apps receive.
+`renewable_overlap_report.pdf`) and not to the tracking data itself.
 
 ### Most common errors
 
@@ -250,34 +235,9 @@ anywhere in a Workflow without affecting what downstream Apps receive.
   App run -- the CSV artefact is still produced even if the PDF report
   fails to render for some reason.
 
-## Example output
-
-*Add a screenshot here once you've run the App on real data*, so users can
-see what they'll get before running it themselves. To add one:
-
-1. Run the App (locally or via a MoveApps Workflow) on a real dataset.
-2. Take a screenshot of one or both artefacts -- e.g. the first page of
-   `renewable_overlap_report.pdf` (which includes the screening summary and
-   overview map), and/or `renewable_overlap_summary.csv` opened in a
-   spreadsheet program.
-3. Save the image into the repo, e.g. as `docs/example_report_screenshot.png`
-   (create the `docs/` folder if it doesn't exist).
-4. Replace this section's placeholder text with an image embed pointing at
-   that file:
-
-   ```markdown
-   ![Example report output](docs/example_report_screenshot.png)
-   ```
-
-5. If you use real study data for the screenshot, double check it's OK to
-   share publicly (e.g. no sensitive tracking data for at-risk species)
-   before committing it to the repo -- consider using a public/example
-   dataset instead if in doubt.
-
 ## Height analysis
 
-Off by default, and wind-only (ground-mounted solar arrays don't have an
-equivalent vertical hazard zone). When enabled, the App looks for a
+Off by default, and wind-only as of now. When enabled, the App looks for a
 recognized Movebank height field on the input data, checked in this
 priority order:
 
