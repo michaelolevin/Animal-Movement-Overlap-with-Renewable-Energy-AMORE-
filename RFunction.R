@@ -47,10 +47,16 @@ rFunction <- function(data,
   }
   logger.info(paste("Query region mode:", query_region_mode))
 
-  study_name <- tryCatch(
-    unique(move2::mt_track_data(data)$study_name)[1],
-    error = function(e) NA_character_
-  )
+  study_name <- tryCatch({
+    td <- move2::mt_track_data(data)
+    candidates <- c("study_name", "study")
+    found <- intersect(candidates, names(td))
+    if (length(found) > 0) {
+      as.character(unique(td[[found[1]]])[1])
+    } else {
+      NA_character_
+    }
+  }, error = function(e) NA_character_)
 
   # Per-track taxon, pulled from Movebank's standard reference-data columns.
   # "individual_taxon_canonical_name" is the standard Movebank field;
@@ -234,6 +240,11 @@ rFunction <- function(data,
   # -------------------------------------------------------------------------
   # Render narrative PDF artifact
   # -------------------------------------------------------------------------
+  # The CSV summary artefact above is the primary output of this App. The
+  # PDF report is a secondary, human-readable artefact; if it fails to
+  # render (typically because of a missing LaTeX package on the host
+  # image), we log the error but do not fail the App run, so the CSV is
+  # still delivered to the next node in the workflow.
   tryCatch({
     # report_template.Rmd is shipped as a MoveApps fixed auxiliary file
     # (settingId "report_template", declared in appspec.json's
@@ -249,12 +260,38 @@ rFunction <- function(data,
         "declared under providedAppFiles in appspec.json."
       ))
     }
-
+    
     # rmarkdown::render() takes output_file (a filename) and output_dir
     # separately rather than one combined path, so appArtifactPath()'s
     # result is split into those two pieces here.
     pdf_artifact_path <- appArtifactPath("renewable_overlap_report.pdf")
-
+    
+    # Ensure required LaTeX packages are available
+    required_tex_packages <- c(
+      "amsfonts", "amsmath", "booktabs", "caption", "float",
+      "hyperref", "geometry", "fancyhdr", "xcolor", "titling",
+      "parskip",  "setspace", "enumitem", "ulem"
+    )
+    tryCatch(
+      {
+        if (requireNamespace("tinytex", quietly = TRUE)) {
+          tinytex::tlmgr_install(required_tex_packages)
+        } else {
+          logger.warn(paste(
+            "tinytex package not available; skipping LaTeX package check.",
+            "PDF render will likely fail if required .sty files are absent."
+          ))
+        }
+      },
+      error = function(e) {
+        logger.warn(paste0(
+          "tinytex::tlmgr_install() failed: ", conditionMessage(e),
+          " -- proceeding with render anyway; will fail below if a needed ",
+          ".sty file is missing."
+        ))
+      }
+    )
+    
     rmarkdown::render(
       input       = report_template_path,
       output_file = basename(pdf_artifact_path),
@@ -278,9 +315,12 @@ rFunction <- function(data,
     )
     logger.info(paste("Wrote artifact:", pdf_artifact_path))
   }, error = function(e) {
-    logger.error(paste("PDF rendering failed:", conditionMessage(e)))
+    logger.error(paste(
+      "PDF rendering failed:", conditionMessage(e),
+      "-- CSV summary artefact was still written and is the primary output."
+    ))
   })
-
+  
   # Pass tracking data through unchanged to the next App in the workflow
   return(data)
 }
