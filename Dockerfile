@@ -7,27 +7,14 @@ FROM rocker/geospatial:4.5.1
 LABEL org.opencontainers.image.authors="us@couchbits.com"
 LABEL org.opencontainers.image.vendor="couchbits GmbH"
 
-# --- CHANGE 1: install LaTeX packages as root, into the system-mode
-# TinyTeX tree that ships with rocker/geospatial, BEFORE dropping to the
-# non-root user below. Doing this after `USER $USER` (as previously)
-# installed them in user mode against a sys-mode base install, which
-# caused pdftex to fail at render time with:
-#   "-user mode but path setup is -sys type, bailing out".
-# Pre-build the pdftex/pdflatex format files here too, so the first
-# render doesn't try to invoke mktexfmt at runtime as an unprivileged
-# user (which is the immediate error we saw).
-RUN R -e "tinytex::tlmgr_install(c( \
-      'amsfonts', 'amsmath', 'booktabs', 'caption', 'float', \
-      'hyperref', 'geometry', 'fancyhdr', 'xcolor', 'titling', \
-      'parskip', 'setspace', 'enumitem', 'ulem' \
-    ))"
-RUN fmtutil-sys --all || true
-# --- end CHANGE 1
-
 # Security Aspects
 # Create a non-root user
 ARG username=moveapps
 ARG uid=1001
+# group `staff` b/c of:
+# When running rocker with a non-root user the docker user is still able to install packages.
+# The user docker is member of the group staff and could write to /usr/local/lib/R/site-library.
+# https://github.com/rocker-org/rocker/wiki/managing-users-in-docker
 ARG gid=staff
 ENV USER=$username
 ENV UID=$uid
@@ -40,7 +27,9 @@ RUN adduser --disabled-password \
     --ingroup $GID \
     --home $HOME \
     $USER
+# create working dir with correct ownership
 RUN install -d -o moveapps -g staff $HOME/co-pilot-r
+# create cache-directory for renv with correct ownership
 RUN install -d -o moveapps -g staff $HOME/.cache/R
 USER $USER
 WORKDIR $HOME/co-pilot-r
@@ -58,12 +47,6 @@ COPY --chown=$UID:$GID renv.lock .Rprofile ./
 COPY --chown=$UID:$GID renv/activate.R renv/settings.dcf ./renv/
 # Restore packages
 RUN R -e 'renv::restore(confirm = FALSE)'
-
-# --- CHANGE 2: the previous tlmgr_install() block that lived here has
-# been removed — it was running as $USER (see USER $USER above), which
-# is what caused the sys/user mode mismatch. Moved to the top of the
-# file, before the user is created/switched to.
-# --- end CHANGE 2
 
 # copy the app
 # glob patterns to use conditional copy
