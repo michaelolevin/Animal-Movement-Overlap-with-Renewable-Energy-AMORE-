@@ -48,6 +48,30 @@ COPY --chown=$UID:$GID renv/activate.R renv/settings.dcf ./renv/
 # Restore packages
 RUN R -e 'renv::restore(confirm = FALSE)'
 
+# LaTeX packages needed by the PDF report (data/auxiliary/.../report_template.Rmd).
+# Must run as root: the base image's TeX Live is a *sys*-mode install
+# (/usr/local/texlive, formats in /opt/texlive/texmf-var), which the non-root
+# $USER cannot write to. `fmtutil-sys --all` pre-builds the pdftex/pdflatex
+# format files here, so the first render doesn't try to invoke mktexfmt at
+# runtime as an unprivileged user -- which fails with
+#   "mktexfmt [ERROR]: -user mode but path setup is -sys type, bailing out."
+#
+# The repository is pinned to a frozen TeX Live 2025 snapshot rather than left
+# to the image default. MoveApps builds this app on its own co-pilot-r base
+# image, which does not carry rocker's tlmgr repo pin, so a bare
+# `tlmgr install` there resolves to the live CTAN mirror -- now TeX Live 2026 --
+# and aborts against this TL 2025 install with:
+#   "tlmgr: Local TeX Live (2025) is older than remote repository (2026).
+#    Cross release updates are only supported with update-tlmgr-latest"
+USER root
+RUN tlmgr install \
+      --repository https://www.texlive.info/tlnet-archive/2025/10/30/tlnet \
+      amsfonts amsmath booktabs caption \
+      float hyperref geometry fancyhdr xcolor titling \
+      parskip setspace enumitem ulem
+RUN fmtutil-sys --all
+USER $USER
+
 # copy the app
 # glob patterns to use conditional copy
 COPY --chown=$UID:$GID sr[c]/ap[p]/* ./src/app/
