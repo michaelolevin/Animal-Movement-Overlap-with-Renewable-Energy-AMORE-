@@ -266,32 +266,6 @@ rFunction <- function(data,
     # result is split into those two pieces here.
     pdf_artifact_path <- appArtifactPath("renewable_overlap_report.pdf")
     
-    # Ensure required LaTeX packages are available
-    required_tex_packages <- c(
-      "amsfonts", "amsmath", "booktabs", "caption", "float",
-      "hyperref", "geometry", "fancyhdr", "xcolor", "titling",
-      "parskip",  "setspace", "enumitem", "ulem"
-    )
-    tryCatch(
-      {
-        if (requireNamespace("tinytex", quietly = TRUE)) {
-          tinytex::tlmgr_install(required_tex_packages)
-        } else {
-          logger.warn(paste(
-            "tinytex package not available; skipping LaTeX package check.",
-            "PDF render will likely fail if required .sty files are absent."
-          ))
-        }
-      },
-      error = function(e) {
-        logger.warn(paste0(
-          "tinytex::tlmgr_install() failed: ", conditionMessage(e),
-          " -- proceeding with render anyway; will fail below if a needed ",
-          ".sty file is missing."
-        ))
-      }
-    )
-    
     rmarkdown::render(
       input       = report_template_path,
       output_file = basename(pdf_artifact_path),
