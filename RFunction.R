@@ -246,6 +246,15 @@ rFunction <- function(data,
   # image), we log the error but do not fail the App run, so the CSV is
   # still delivered to the next node in the workflow.
   tryCatch({
+    # Every LaTeX package the report template needs is baked into the
+    # Docker image (see Dockerfile). Disabling tinytex's automatic
+    # package install means a missing package fails fast here with a
+    # clear error instead of tinytex silently shelling out to `tlmgr
+    # install` at runtime -- that unpinned runtime call is what resolved
+    # against the live CTAN mirror and caused the TL2025/TL2026
+    # cross-release failure in the first place.
+    options(tinytex.install_packages = FALSE)
+
     # report_template.Rmd is shipped as a MoveApps fixed auxiliary file
     # (settingId "report_template", declared in appspec.json's
     # providedAppFiles) rather than referenced by a hardcoded repo-relative

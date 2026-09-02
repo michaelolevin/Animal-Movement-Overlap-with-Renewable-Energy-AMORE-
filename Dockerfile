@@ -63,9 +63,24 @@ RUN R -e 'renv::restore(confirm = FALSE)'
 # and aborts against this TL 2025 install with:
 #   "tlmgr: Local TeX Live (2025) is older than remote repository (2026).
 #    Cross release updates are only supported with update-tlmgr-latest"
+#
+# The pin is set with `tlmgr option repository` (persisted to tlmgr's config)
+# rather than a one-off `--repository` flag on this RUN line. A one-off flag
+# only covers this install; it does NOT cover tinytex's automatic runtime
+# package install, which fires if rmarkdown::render() ever hits a missing
+# .sty file and shells out to a plain `tlmgr install` of its own -- that
+# unpinned runtime call is what actually hit the live mirror and failed
+# with the cross-release error above. Persisting the option means every
+# tlmgr invocation, ours or tinytex's, uses this frozen snapshot.
+#
+# Note: amssymb.sty (reported missing in the original failure) is not its
+# own TL package -- it ships inside the `amsfonts` bundle below. The
+# original failure wasn't a missing package on this list; the whole
+# `tlmgr install` call was aborting before installing anything, amsfonts
+# included, due to the unpinned cross-release conflict this option fixes.
 USER root
+RUN tlmgr option repository https://www.texlive.info/tlnet-archive/2025/10/30/tlnet
 RUN tlmgr install \
-      --repository https://www.texlive.info/tlnet-archive/2025/10/30/tlnet \
       amsfonts amsmath booktabs caption \
       float hyperref geometry fancyhdr xcolor titling \
       parskip setspace enumitem ulem
