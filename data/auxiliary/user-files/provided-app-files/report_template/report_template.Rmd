@@ -8,6 +8,10 @@ params:
   wind_pts: NA
   solar_polys: NA
   buffer_distance_m: NA
+  height_points: NA
+  min_locations: NA
+  min_duration_days: NA
+  max_fix_interval_hours: NA
 ---
 
 ```{r setup, include=FALSE}
@@ -19,6 +23,11 @@ library(patchwork)
 
 res <- params$track_results
 n_tracks_total <- if (!is.null(res) && nrow(res) > 0) length(unique(res$track_id)) else 0
+
+# Dynamic figure height so the quality scorecard (one row per track, faceted
+# by metric) stays readable as track count grows, without wasting space for
+# small studies -- same reasoning as the exposure chart's height below.
+fig_h_scorecard <- max(3, 0.35 * n_tracks_total + 1.5)
 ```
 
 ```{r table-helpers}
@@ -53,6 +62,36 @@ na_dash <- function(x) ifelse(is.na(x), "-", x)
 
 ## Data quality summary
 
+```{r quality-scorecard, fig.width=9, fig.height=fig_h_scorecard}
+# MoveApps may pass an explicit NULL (not just omit the argument) for an
+# unset optional numeric setting -- as.numeric(NULL) is a zero-length
+# vector, not NA, which would silently break data.frame()'s row recycling
+# below (a length-0 column against length-n_tracks_total ones). Collapse
+# NULL/zero-length/non-numeric to a proper scalar NA instead.
+safe_num <- function(x) {
+  v <- suppressWarnings(as.numeric(x))
+  if (length(v) == 0 || is.na(v[1])) NA_real_ else v[1]
+}
+
+scorecard_data <- dplyr::bind_rows(
+  data.frame(track_id = res$track_id, metric = "N locations",
+             value = res$n_locations, threshold = safe_num(params$min_locations)),
+  data.frame(track_id = res$track_id, metric = "Duration (days)",
+             value = res$duration_days, threshold = safe_num(params$min_duration_days)),
+  data.frame(track_id = res$track_id, metric = "Median fix interval (h)",
+             value = res$median_fix_interval_hours, threshold = safe_num(params$max_fix_interval_hours))
+)
+scorecard_data$metric <- factor(scorecard_data$metric,
+                                 levels = c("N locations", "Duration (days)", "Median fix interval (h)"))
+
+ggplot(scorecard_data, aes(x = value, y = track_id)) +
+  geom_vline(aes(xintercept = threshold), linetype = "dashed", color = "grey40") +
+  geom_point(size = 2.8, color = "#4C72B0") +
+  facet_wrap(~metric, scales = "free_x", nrow = 1) +
+  labs(x = NULL, y = "Track ID") +
+  theme_minimal()
+```
+
 ```{r quality-table}
 quality_display <- res %>%
   mutate(
@@ -75,15 +114,8 @@ knitr::kable(
 ```
 
 *"Days monitored" is the count of distinct calendar days represented by the
-point set used for the infrastructure overlap test below (the same set
-`enable_thinning`, if on, would subsample); "Days monitored (%)" is that
-count as a percentage of "Duration (days)," so a track sampled sparsely or
-with large data gaps relative to its own start/end dates will show up
-lower here. This App does not apply a fixed pass/fail quality
-threshold -- what counts as sufficient data for a follow-up impact
-analysis depends on the taxon and research question. Use these metrics,
-together with the exposure metrics below, to make that judgment for your
-own study.*
+point set used for the infrastructure overlap test below; "Days monitored (%)" 
+is that count as a percentage of "Duration (days)."
 
 ## Key exposure highlights
 
@@ -143,14 +175,29 @@ exposure_long <- dplyr::bind_rows(
   filter(!is.na(pct))
 
 if (nrow(exposure_long) > 0) {
+  # Fixed 0-100 scale (rather than one that zooms to the data range) so a
+  # bar's length is always comparable to the full range of possible
+  # exposure, and a reader skimming the chart shape alone -- without
+  # reading the axis text -- can't mistake a genuinely tiny percentage for
+  # a large one. Since a fixed 0-100 scale can make already-small values
+  # nearly invisible as bars, each bar also gets its own text label with
+  # the exact value, so the number is still legible even when the bar
+  # itself is a sliver.
   ggplot(exposure_long, aes(x = reorder(track_id, pct), y = pct, fill = Infrastructure)) +
     geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-    coord_flip() +
+    geom_text(
+      aes(label = sprintf("%.1f%%", pct)),
+      position = position_dodge(width = 0.7),
+      hjust = -0.15, size = 3, color = "gray30"
+    ) +
+    coord_flip(clip = "off") +
+    scale_y_continuous(limits = c(0, 100), expand = expansion(mult = c(0, 0.08))) +
     scale_fill_manual(values = c(Wind = "#4C72B0", Solar = "#DD8452")) +
     labs(x = NULL, y = "% of tested fixes within buffer",
          title = "Exposure intensity by track") +
     theme_minimal(base_size = 11) +
-    theme(legend.position = "bottom")
+    theme(legend.position = "bottom",
+          plot.margin = margin(5.5, 22, 5.5, 5.5))
 } else {
   ggplot() +
     annotate("text", x = 0, y = 0, label = "No exposure-intensity data available for this chart") +
@@ -160,15 +207,50 @@ if (nrow(exposure_long) > 0) {
 
 ## Infrastructure overlap summary
 
-Overlap evidence comes in two kinds: **point-confirmed** (a recorded GPS
-fix actually fell within the buffer -- direct evidence) and **track-only**
-(the interpolated path between two consecutive fixes passed within the
-buffer, but neither fix itself did -- inferred, not confirmed, and most
-relevant when fix intervals are coarse). "N turbines"/"N arrays" below
-combines both kinds (any facility with either type of evidence); the
-exposure-intensity columns (points/days/visits/distance) are
-**point-confirmed only**, since a "visit" or "day spent nearby" should
-reflect an actual recorded detection, not just an inferred path crossing.
+Overlap evidence is either **1) point-confirmed**, where a recorded GPS
+fix actually fell within the buffer, or **2) track-only**, where the 
+interpolated path between two consecutive fixes passed within the
+buffer, but neither did. "N turbines"/"N arrays" below
+combines both kinds, while the exposure-intensity columns 
+(points/days/visits/distance) are **point-confirmed only**.
+
+### Overview
+
+```{r temporal-breakdown-setup}
+temporal_data <- dplyr::bind_rows(
+  if (any(!is.na(res$wind_temporal_relation))) {
+    as.data.frame(table(relation = res$wind_temporal_relation)) %>%
+      dplyr::mutate(infra = "Wind") %>%
+      dplyr::rename(n = Freq)
+  },
+  if (any(!is.na(res$solar_temporal_relation))) {
+    as.data.frame(table(relation = res$solar_temporal_relation)) %>%
+      dplyr::mutate(infra = "Solar") %>%
+      dplyr::rename(n = Freq)
+  }
+)
+has_temporal_data <- !is.null(temporal_data) && nrow(temporal_data) > 0
+```
+
+```{r temporal-breakdown, fig.width=6, fig.height=4, eval=has_temporal_data}
+ggplot(temporal_data, aes(x = infra, y = n, fill = relation)) +
+  geom_col(position = "stack", width = 0.5) +
+  geom_text(aes(label = n), position = position_stack(vjust = 0.5), size = 3.5) +
+  labs(x = NULL, y = "Number of tracks", fill = "Temporal relation") +
+  theme_minimal()
+```
+
+```{r temporal-breakdown-note, results='asis'}
+if (!has_temporal_data) {
+  cat("*No temporal relation data available (no overlapping infrastructure",
+      "with a known operational year).*\n")
+}
+```
+
+*Timing categories: "pre-operational" (tracking entirely before the facility's
+operational year), "post-operational" (entirely after), "spanning" (before
+and after), "mixed" (track overlaps multiple facilities with different
+operational years).*
 
 ### Wind
 
@@ -197,14 +279,6 @@ print(knitr::kable(
 ))
 cat("\n\n\\normalsize\n\n")
 ```
-
-*"Pts/Days in buffer (%)" are percentages of the point set tested for
-overlap (see the quality-summary note above for what that set is); "Median
-dist" is the median distance to the nearest turbine across ALL fixes (not
-just the single closest approach shown in "Nearest"), reflecting how close
-the track ranges *typically*, not only at its closest point. Full detail
-(including mean distance and buffer-specific fix interval) is in the CSV
-artifact.*
 
 ```{r height-table, results='asis'}
 height_used <- "wind_height_field_used" %in% names(res) && any(!is.na(res$wind_height_field_used))
@@ -238,6 +312,64 @@ if (height_used) {
 }
 ```
 
+```{r height-points-setup}
+# Per-point height/distance detail (one row per tested fix with a non-NA
+# height), shared by both the wind and solar height figures below. NULL/
+# zero-row/missing-column all collapse to the same "nothing to plot" state,
+# so downstream chunks only need to check height_pts_available.
+hp <- params$height_points
+height_pts_available <- !is.null(hp) && is.data.frame(hp) && nrow(hp) > 0 &&
+  "height_m" %in% names(hp)
+
+# Wind figure scope: buffer-zone fixes only, matching the height-table above
+# ("points within the horizontal buffer only").
+wind_height_pts <- if (height_pts_available) {
+  hp %>% filter(wind_in_buffer, !is.na(height_m))
+} else {
+  tibble::tibble()
+}
+n_wind_facet_tracks <- max(1, length(unique(wind_height_pts$track_id)))
+
+# Solar figure scope: ALL tested fixes with a known distance to the nearest
+# array, not just buffer-zone ones -- the point of this figure is to show
+# how height varies with proximity, including well outside the buffer, so
+# restricting to buffer-zone fixes would cut off exactly the comparison
+# that makes it interesting.
+solar_height_pts <- if (height_pts_available) {
+  hp %>% filter(!is.na(height_m), !is.na(solar_dist_m))
+} else {
+  tibble::tibble()
+}
+```
+
+```{r height-dist-wind, fig.width=8, fig.height=max(3, 1.9 * ceiling(n_wind_facet_tracks / 3) + 1)}
+if (height_pts_available && nrow(wind_height_pts) > 0) {
+  wind_height_pts_plot <- wind_height_pts %>%
+    mutate(rotor_zone = dplyr::case_when(
+      is.na(wind_in_rotor_zone) ~ "Unclassified",
+      wind_in_rotor_zone ~ "In rotor zone",
+      TRUE ~ "Outside rotor zone"
+    ))
+
+  ggplot(wind_height_pts_plot, aes(x = height_m, fill = rotor_zone)) +
+    geom_histogram(bins = 30, color = "white", linewidth = 0.1) +
+    facet_wrap(~track_id, scales = "free", ncol = 3) +
+    scale_fill_manual(
+      values = c("In rotor zone" = "#C44E52", "Outside rotor zone" = "#4C72B0",
+                 "Unclassified" = "gray70"),
+      breaks = c("In rotor zone", "Outside rotor zone", "Unclassified")
+    ) +
+    labs(x = "Height (m)", y = "N fixes", fill = NULL,
+         title = "Height distribution near wind turbines, by track") +
+    theme_minimal(base_size = 10) +
+    theme(legend.position = "bottom", strip.text = element_text(size = 8))
+} else {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "No per-point height data available for this chart") +
+    theme_void()
+}
+```
+
 ### Solar
 
 ```{r overlap-table-solar, results='asis'}
@@ -263,10 +395,73 @@ print(knitr::kable(
 cat("\n\n\\normalsize\n\n")
 ```
 
-*Timing categories: "pre-operational" (tracking entirely before the facility's
-operational year), "post-operational" (entirely after), "spanning" (before
-and after), "mixed" (track overlaps multiple facilities with different
-operational years).*
+```{r height-table-solar, results='asis'}
+solar_height_used <- "solar_height_field_used" %in% names(res) && any(!is.na(res$solar_height_field_used))
+
+if (solar_height_used) {
+  cat("**Height relative to panels** (points within the horizontal buffer only -- see README's Height analysis section for the full methodology and its limits). Unlike wind's rotor-swept zone, ground-mounted solar panels aren't a rotating strike hazard, so this is not a pass/fail hazard classification -- it simply reports whether animals near an array were flying close to panel level or well above it, against a single assumed panel height (GM-SEUS provides no per-array height field; see the App's README for the assumed value).\n\n")
+
+  height_display_solar <- res %>%
+    mutate(pct_at_or_below_panel = ifelse(n_solar_points_in_buffer > 0,
+                                           100 * n_solar_points_at_or_below_panel_height / n_solar_points_in_buffer,
+                                           NA_real_)) %>%
+    transmute(
+      `Track ID` = track_id,
+      `Height field used` = pretty_field_name(solar_height_field_used),
+      `True AGL?` = yn(solar_height_is_agl),
+      `At/below panel ht (%)` = pct_at_or_below_panel,
+      `N above panel ht` = n_solar_points_above_panel_height,
+      `Median height (m)` = solar_height_median_m,
+      `Median vs. panel (m)` = solar_height_median_relative_to_panel_m
+    )
+
+  cat("\\small\n\n")
+  print(knitr::kable(
+    height_display_solar, booktabs = TRUE,
+    digits = c(0, 0, 0, 0, 0, 0, 1)
+  ))
+  cat("\n\n\\normalsize\n\n")
+
+  assumed_ht <- res$solar_assumed_panel_height_m[!is.na(res$solar_assumed_panel_height_m)][1]
+  if (!is.na(assumed_ht)) {
+    cat(sprintf("\n\n*Assumed panel height: **%.0f m**. \"At/below panel ht (%%)\" is the percentage of buffer-zone fixes at or below that height; \"Median vs. panel (m)\" is the median fix height minus the assumed panel height (positive = flying above the panels, negative = at/below). Both are only ever populated when \"True AGL?\" is Yes -- otherwise height is reported for context only, since ellipsoid/mean-sea-level height cannot be safely compared to panel height without a ground-elevation correction this App does not perform.*\n", assumed_ht))
+  } else {
+    cat("\n\n*No fixes had a true-AGL height, so no assumed-panel-height comparison could be made -- see the field/AGL columns above for context only.*\n")
+  }
+}
+```
+
+```{r height-dist-solar, fig.width=7, fig.height=5}
+if (height_pts_available && nrow(solar_height_pts) > 0) {
+  # Cap the x-axis for readability -- GM-SEUS is a nationwide layer, so
+  # st_nearest_feature() always finds *some* array, occasionally hundreds of
+  # km away for a track nowhere near solar development. coord_cartesian()
+  # only clips the displayed range; it doesn't drop data from the smooth.
+  dist_cap <- max(
+    params$buffer_distance_m * 1.5,
+    stats::quantile(solar_height_pts$solar_dist_m, 0.95, na.rm = TRUE),
+    na.rm = TRUE
+  )
+
+  ggplot(solar_height_pts, aes(x = solar_dist_m, y = height_m)) +
+    # Small + translucent, same reasoning as the turbine markers on the map
+    # -- a long-running or unthinned track can mean many thousands of
+    # points, which at full size/opacity would just be a solid blob.
+    geom_point(size = 0.5, alpha = 0.25, color = "#DD8452") +
+    geom_smooth(method = "loess", se = TRUE, color = "gray20", linewidth = 0.6) +
+    geom_vline(xintercept = params$buffer_distance_m, linetype = "dashed", color = "gray40") +
+    annotate("text", x = params$buffer_distance_m, y = Inf, label = "buffer distance",
+             angle = 90, vjust = -0.5, hjust = 1.1, size = 3, color = "gray40") +
+    coord_cartesian(xlim = c(0, dist_cap)) +
+    labs(x = "Distance to nearest solar array (m)", y = "Height (m)",
+         title = "Flight height vs. distance to nearest solar array (all tracks pooled)") +
+    theme_minimal(base_size = 11)
+} else {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = "No per-point height/distance data available for this chart") +
+    theme_void()
+}
+```
 
 ## Map
 
@@ -318,9 +513,57 @@ few_breaks <- function(n = 3) scales::breaks_pretty(n = n)
 
 # Crop a layer to a bbox-derived extent, tolerating empty results/edge cases
 # rather than letting a cosmetic map crop fail the whole report render.
+#
+# Solar arrays reach this function already reprojected to WGS84 (lon/lat).
+# sf's default spherical (S2) geometry engine enforces ring-orientation
+# rules that are stricter than -- and different from -- the planar OGC
+# validity already checked/repaired in fetch_gmseus() (which runs in the
+# projected working CRS). A polygon that is perfectly valid there can still
+# trip an S2 "invalid orientation"-style error once it's in geographic
+# coordinates, which st_crop() hits internally via st_intersection(). That
+# error was previously caught and silently turned into NULL here -- which
+# is exactly why solar arrays were disappearing from the map even though
+# the overlap counts (computed earlier, in the projected CRS, before this
+# function ever runs) were correct. Since cropping to a bounding box for a
+# static figure is a purely planar operation anyway, S2 is switched off for
+# the duration of the crop (and always restored after, even on error).
 safe_crop <- function(x, extent) {
   if (is.null(x) || nrow(x) == 0) return(NULL)
-  tryCatch(sf::st_crop(x, extent), error = function(e) NULL)
+  old_s2 <- sf::sf_use_s2()
+  on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+  sf::sf_use_s2(FALSE)
+  tryCatch(sf::st_crop(x, extent), error = function(e) {
+    warning(paste("safe_crop: dropping a layer after crop error:", conditionMessage(e)))
+    NULL
+  })
+}
+
+# A fixed-size marker at each solar array's centroid, layered on top of the
+# polygon fill. A geom_sf() point's size is a fixed physical size on the
+# page regardless of the map's zoom level, whereas a several-hundred-meter
+# array's polygon fill is not -- across a whole study's extent (the
+# overview map) that fill can render as a sub-pixel sliver, effectively
+# invisible, even directly under a fix (see the "Nearest (m) = 0" rows in
+# the Solar table). The marker stays visible exactly when the fill isn't.
+# At per-track (already zoomed-in) scale, where the polygon is plenty
+# visible on its own, the same small fixed size keeps this a subtle accent
+# rather than a second competing layer -- deliberately not scaled up there.
+#
+# st_point_on_surface() (not st_centroid()) guarantees a point that
+# actually lies on the polygon: an array clipped at a crop's edge can end
+# up an irregular or split multipolygon shape, for which a true geometric
+# centroid can fall outside the shape entirely (e.g. a crescent-shaped
+# remainder after clipping). Wrapped with S2 off for the same reason as
+# safe_crop() above -- this runs on the same post-crop WGS84 geometries.
+safe_centroid <- function(x) {
+  if (is.null(x) || nrow(x) == 0) return(NULL)
+  old_s2 <- sf::sf_use_s2()
+  on.exit(sf::sf_use_s2(old_s2), add = TRUE)
+  sf::sf_use_s2(FALSE)
+  tryCatch(suppressWarnings(sf::st_point_on_surface(x)), error = function(e) {
+    warning(paste("safe_centroid: dropping centroid markers after error:", conditionMessage(e)))
+    NULL
+  })
 }
 
 # Build a bbox-derived extent (WGS84) around a set of points, with a margin
@@ -359,6 +602,11 @@ has_layer <- FALSE
 
 if (!is.null(solar_overview) && nrow(solar_overview) > 0) {
   p <- p + geom_sf(data = solar_overview, fill = "#DD8452", color = NA, alpha = 0.5)
+  solar_overview_centroids <- safe_centroid(solar_overview)
+  if (!is.null(solar_overview_centroids) && nrow(solar_overview_centroids) > 0) {
+    p <- p + geom_sf(data = solar_overview_centroids, shape = 18, size = 1,
+                      color = "#DD8452", alpha = 0.85)
+  }
   has_layer <- TRUE
 }
 if (!is.null(wind_overview) && nrow(wind_overview) > 0) {
@@ -386,8 +634,7 @@ if (has_layer) {
   p + theme_minimal(base_size = 11) +
     scale_x_continuous(breaks = few_breaks(4)) +
     scale_y_continuous(breaks = few_breaks(4)) +
-    labs(title = "Tracks with nearby wind turbines (triangles) and solar arrays (polygons)",
-         color = "Track ID") +
+    labs(color = "Track ID") +
     theme(legend.position = "bottom")
 } else {
   ggplot() +
@@ -396,33 +643,13 @@ if (has_layer) {
 }
 ```
 
-*If tracks are geographically dispersed (e.g. separate breeding/wintering
-areas, or multiple distinct individuals/locations), this overview will span
-that full extent -- see the per-track maps below for a zoomed view of each
-individual's own local area.*
+*Wind turbines are shown as small triangles and solar arrays as shaded
+polygons with a diamond marker at their centroids. If tracks are geographically 
+dispersed (e.g. separate breeding/wintering areas, or multiple distinct 
+individuals/locations), thisoverview will span that full extent. See the 
+per-track maps below for a zoomed view of each individual's own local area.*
 
 ### Individual track maps
-
-Each panel below is independently zoomed to its own track's extent,
-condensed into a single grid (via `patchwork`) rather than one page per
-individual -- this keeps the report a manageable length for studies with
-many tracked individuals (e.g. large migratory-bird studies) while still
-giving each track its own local view. (Note: `facet_wrap(scales = "free")`
-can't be used here -- ggplot2's `coord_sf()`, which every `geom_sf()` plot
-uses, doesn't support per-panel free scales within a single `facet_wrap()`
-call, so each panel below is built as its own fully independent plot with
-its own zoom, then composed into a grid, rather than one shared faceted
-plot.) The animal's path is drawn as a connected black line rather than
-scattered points, so it stays legible even over a dense nearby
-infrastructure layer; wind turbines in particular are deliberately drawn
-small and translucent, since a busy wind-development corridor can put
-hundreds of them in a single panel. Panels are paginated into fixed-size
-groups (a consistent number of panels per page) rather than one giant grid
-sized to fit the whole study -- otherwise a large study (e.g. 50+
-individuals) would still get squeezed onto a single page and every panel
-would shrink to an illegible thumbnail; pagination keeps panel size
-legible and consistent regardless of how many tracks the study has, at the
-cost of more pages for larger studies.
 
 ```{r map-per-track, fig.width=9, fig.height=1 + 3.2 * ceiling(tracks_per_page / ncol_per_page), results='asis'}
 if (!is.null(tracks_wgs84) && nrow(tracks_wgs84) > 0) {
@@ -446,6 +673,14 @@ if (!is.null(tracks_wgs84) && nrow(tracks_wgs84) > 0) {
     p_i <- ggplot()
     if (!is.null(solar_i) && nrow(solar_i) > 0) {
       p_i <- p_i + geom_sf(data = solar_i, fill = "#DD8452", color = NA, alpha = 0.5)
+      solar_i_centroids <- safe_centroid(solar_i)
+      if (!is.null(solar_i_centroids) && nrow(solar_i_centroids) > 0) {
+        # Slightly smaller than the overview map's marker (0.8 vs 1) -- these
+        # panels are physically smaller on the page (multiple per row), so
+        # the same absolute size would read as more dominant here.
+        p_i <- p_i + geom_sf(data = solar_i_centroids, shape = 18, size = 0.8,
+                              color = "#DD8452", alpha = 0.8)
+      }
     }
     if (!is.null(wind_i) && nrow(wind_i) > 0) {
       # Small + translucent, same reasoning as the overview map -- a

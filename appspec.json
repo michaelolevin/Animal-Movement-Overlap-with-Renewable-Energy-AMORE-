@@ -49,10 +49,35 @@
     },
     {
       "id": "include_height_analysis",
-      "name": "Analyze location height relative to wind turbines",
-      "description": "Wind only. If the input data includes a recognized Movebank height field (height_above_ground_level, height_above_mean_sea_level, or height_above_ellipsoid), reports the height of locations near turbines. Only height_above_ground_level (true height above ground) enables an actual rotor-swept-zone pass/fail classification; the other fields are reported as informational context only, since they cannot be safely compared to a ground-relative hazard zone without a ground-elevation correction this App does not perform.",
+      "name": "Analyze location height relative to infrastructure",
+      "description": "If the input data includes a recognized Movebank height field (height_above_ground_level, height_above_mean_sea_level, or height_above_ellipsoid), reports the height of locations near turbines and solar arrays. Only height_above_ground_level (true height above ground) enables the wind rotor-swept-zone pass/fail classification and the solar at/below-assumed-panel-height comparison; the other fields are reported as informational context only (raw min/median/max height), since they cannot be safely compared to a ground-relative reference without a ground-elevation correction this App does not perform.",
       "defaultValue": false,
       "type": "CHECKBOX"
+    },
+    {
+      "id": "solar_assumed_panel_height_m",
+      "name": "Assumed solar panel height (m)",
+      "description": "Only used when height analysis (above) is on, height_above_ground_level is available, and solar overlap checking is on. GM-SEUS has no per-array height field to look up (unlike USWTDB's per-turbine hub height), so this single assumed height is compared against every buffer-zone fix's height instead, to report whether animals near an array were flying close to panel level or well above it. Not a hazard pass/fail classification the way the wind rotor zone is -- ground-mounted panels aren't a rotating strike hazard. Utility-scale ground-mounted arrays commonly range roughly 2-4 m depending on fixed-tilt vs. tracker design; override this if a more accurate value is known for the array types/region in this study.",
+      "defaultValue": 3,
+      "type": "INTEGER"
+    },
+    {
+      "id": "min_locations",
+      "name": "Data quality scorecard: minimum locations (optional)",
+      "description": "Optional. Draws a dashed reference line at this value on the PDF report's data quality scorecard chart, for the 'N locations' metric. Purely a visual reference -- the App never excludes or flags tracks based on this value, since what counts as 'enough' data depends on the taxon and research question (see the Data quality summary table, which is unaffected either way). Leave unset for no reference line.",
+      "type": "INTEGER"
+    },
+    {
+      "id": "min_duration_days",
+      "name": "Data quality scorecard: minimum duration, days (optional)",
+      "description": "Optional. Draws a dashed reference line at this value on the PDF report's data quality scorecard chart, for the 'Duration (days)' metric. Purely a visual reference -- the App never excludes or flags tracks based on this value (see min_locations above for why). Leave unset for no reference line.",
+      "type": "INTEGER"
+    },
+    {
+      "id": "max_fix_interval_hours",
+      "name": "Data quality scorecard: maximum median fix interval, hours (optional)",
+      "description": "Optional. Draws a dashed reference line at this value on the PDF report's data quality scorecard chart, for the 'Median fix interval (h)' metric. Purely a visual reference -- the App never excludes or flags tracks based on this value (see min_locations above for why). Leave unset for no reference line.",
+      "type": "INTEGER"
     }
   ],
   "providedAppFiles": [

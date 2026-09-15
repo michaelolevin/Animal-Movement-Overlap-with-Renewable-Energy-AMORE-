@@ -31,6 +31,11 @@ dataset, this MoveApp:
    a fixed pass/fail threshold -- what counts as "enough" data for a
    follow-up impact analysis depends on the taxon and research question,
    so the App presents the metrics and leaves that judgment to the user.
+4. Optionally (see *Height analysis* below) reports the height of locations
+   near infrastructure, relative to a hazard-relevant reference: the wind
+   rotor-swept zone for turbines, and a single assumed panel height for
+   solar arrays (which have no per-array height field to look up the way
+   turbines do).
 
 The App does not modify the tracking data (see *Changes in output data*
 below). It produces two artefacts (see *Artefacts* below) and passes the
@@ -43,9 +48,10 @@ potential workflow.
 
 This App was developed for any taxonomic group, as the overlap and data-
 quality metrics it computes make no taxon-specific assumptions. The optional
-height-relative-to-turbine analysis is most relevant for taxa that fly 
-(e.g. birds, bats), since it's meant to assess collision risk with 
-rotor-swept airspace.
+height-relative-to-infrastructure analysis is most relevant for taxa that
+fly (e.g. birds, bats), since it's meant to assess collision risk with
+rotor-swept airspace (wind) or general flight-height behavior near ground-
+mounted arrays (solar).
 
 **Geographic scope:** this App is only applicable for datasets collected in
 the **United States**, as both energy infrastructure datasets (USWTDB and
@@ -92,8 +98,7 @@ SDK's `appArtifactPath()` function (per the
 
 - `renewable_overlap_summary.csv`: one row per tracked individual, with columns
   for study name, individual ID, taxon, and:
-  - **Data quality metrics** (no pass/fail flag -- see *Required data
-    properties* above): `n_locations`, `duration_days`,
+  - **Data quality metrics**: `n_locations`, `duration_days`,
     `median_fix_interval_hours`, and `n_days_monitored` (distinct calendar
     days represented by the tested, possibly-thinned point set -- the PDF
     report additionally displays this as a percentage of `duration_days`,
@@ -119,14 +124,16 @@ SDK's `appArtifactPath()` function (per the
   - A few additional columns exist in the CSV but aren't surfaced in the
     PDF report: the raw (non-percentage) point-confirmed counts
     (`n_wind_points_in_buffer`/`n_solar_points_in_buffer` -- also the
-    denominator behind the height section's rotor-zone percentage, see
-    *Height analysis* below), the raw track-only-evidence counts
-    (`n_turbines_track_only`/`n_solar_arrays_track_only` -- facilities the
-    interpolated path passed within the buffer of but no single recorded
-    fix confirmed), and `solar_instYr_confidence_diff` (the gap, in years,
-    between GM-SEUS's `instYr` and its independent `instYrEst` field for
-    the closest-diverging overlapping array -- a soft corroboration signal,
-    not a validity flag).
+    denominator behind the height section's rotor-zone/panel-height
+    percentages, see *Height analysis* below), the raw track-only-evidence
+    counts (`n_turbines_track_only`/`n_solar_arrays_track_only` --
+    facilities the interpolated path passed within the buffer of but no
+    single recorded fix confirmed), and `solar_instYr_confidence_diff` (the
+    gap, in years, between GM-SEUS's `instYr` and its independent
+    `instYrEst` field for the closest-diverging overlapping array -- a soft
+    corroboration signal, not a validity flag).
+  - If the optional height analysis is on (see *Height analysis* below),
+    additional `wind_height_*`/`solar_height_*` columns are added.
 
   **Visit bout definition:** a bout is a maximal run of temporally-
   consecutive tested fixes that are each individually within the buffer.
@@ -138,9 +145,31 @@ SDK's `appArtifactPath()` function (per the
   than being split as there is no direct evidence the animal actually
   left during an unobserved gap.
 
-- `renewable_overlap_report.pdf`: narrative summary of the study
-  (data-quality and exposure-intensity tables, key-highlights callouts,
-  and a map of nearby infrastructure, per individual).
+- `renewable_overlap_report.pdf`: narrative summary of the study, in this
+  order:
+  - **Data quality summary**: a scorecard chart (one row per track, faceted
+    by metric -- N locations, duration, median fix interval) alongside the
+    full numeric table. The scorecard can optionally show a dashed
+    reference line per metric (see the three `min_locations`/
+    `min_duration_days`/`max_fix_interval_hours` settings below) -- purely
+    visual, never a filter (see *Settings* below for why).
+  - **Key exposure highlights**: a bar chart of point-confirmed exposure
+    intensity (% of tested fixes within the buffer) per track, wind and
+    solar side by side.
+  - **Infrastructure overlap summary**: an "Overview" subsection with a
+    stacked bar chart of temporal-relation counts (wind vs. solar), then
+    full **Wind** and **Solar** overlap tables. If height analysis is on
+    (see *Height analysis* below), each also gets its own height table and
+    chart: wind gets a per-track height-distribution histogram colored by
+    rotor-zone membership; solar gets a height-vs-panel table plus a pooled
+    height-vs-distance-to-nearest-array scatter (all tested fixes, not just
+    buffer-zone ones, so the trend on both sides of the buffer line is
+    visible).
+  - **Map**: an overview map plus one zoomed panel per track,
+    with wind turbines as small triangles and solar arrays as shaded
+    polygons. Each solar array also gets a small diamond marker at its
+    centroid that stays visible at larger scales when the polygon itself may be 
+    dwarfed.
 
 ### Settings
 
@@ -170,15 +199,34 @@ used in `RFunction.R`.*
   (thinning_max_locations): When thinning is enabled, tracks with more
   locations than this are evenly subsampled down to approximately this many
   points before the overlap test. Default: `5000`.
-- `Analyze location height relative to wind turbines`
-  (include_height_analysis): Wind only. If the input data includes a
-  recognized Movebank height field, reports the height of locations near
-  turbines. Default: `FALSE` (off).
+- `Analyze location height relative to infrastructure`
+  (include_height_analysis): If the input data includes a recognized
+  Movebank height field, reports the height of locations near both
+  turbines and solar arrays. Default: `FALSE` (off).
+- `Assumed solar panel height (m)` (solar_assumed_panel_height_m): Only
+  used when height analysis (above) is on, `height_above_ground_level` is
+  available, and solar overlap checking is on. GM-SEUS has no per-array
+  height field to look up, so this single assumed height stands in for
+  it -- see *Height analysis* below. Default: `3`.
+- `Data quality scorecard: minimum locations` (min_locations),
+  `Data quality scorecard: minimum duration, days` (min_duration_days),
+  `Data quality scorecard: maximum median fix interval, hours`
+  (max_fix_interval_hours): All three optional and unset by default. Each
+  draws a dashed reference line at that value on the PDF report's data
+  quality scorecard chart, for its respective metric -- purely a visual
+  aid, **not** a filter or pass/fail flag (see immediately below for why).
+  Leaving any of them unset simply omits that reference line; the scorecard
+  and underlying table render identically either way.
 
-This App does not expose data-quality pass/fail thresholds as settings --
-it reports the quality metrics for every track (see *Data quality summary*
-under *Artefacts* above) and leaves the judgment of what's "enough" data
-to the App user, since that depends on the taxon and research question.
+This App does not exclude or flag tracks based on any data-quality
+threshold, even though the three scorecard settings above let you draw a
+reference value on the chart -- it always reports the quality metrics for
+every track (see *Data quality summary* under *Artefacts* above) and
+leaves the judgment of what's "enough" data to the App user, since that
+depends on the taxon and research question. The reference lines are
+strictly a visual aid to make that judgment easier to make by eye; setting
+one has no effect on which tracks appear, what their metrics are, or any
+other output.
 
 ### Changes in output data
 
@@ -237,23 +285,33 @@ artefacts described above (`renewable_overlap_summary.csv` and
 
 ## Height analysis
 
-Off by default, and wind-only as of now. When enabled, the App looks for a
-recognized Movebank height field on the input data, checked in this
-priority order:
+Off by default. When enabled, the App looks for a recognized Movebank
+height field on the input data, checked in this priority order:
 
 1. **`height_above_ground_level`** -- true height above ground. This is the
-   only case where an actual rotor-swept-zone pass/fail classification is
-   computed, using USWTDB's `t_hh` (hub height) and `t_rd` (rotor diameter):
-   a point counts as in the rotor zone if its height falls within
-   `hub_height +/- (rotor_diameter / 2)` of any turbine it's already within
-   the horizontal buffer of.
+   only case where either of the two classifications below is computed;
+   both operate only on points already found within a given
+   infrastructure type's horizontal buffer (see *Important scope note*
+   below):
+   - **Wind**: an actual rotor-swept-zone pass/fail classification, using
+     USWTDB's `t_hh` (hub height) and `t_rd` (rotor diameter) -- a point
+     counts as in the rotor zone if its height falls within
+     `hub_height +/- (rotor_diameter / 2)` of any nearby turbine.
+   - **Solar**: GM-SEUS has no per-array height field to look up the way
+     USWTDB's hub height/rotor diameter can be, so instead every
+     buffer-zone fix's height is compared against a single assumed panel
+     height (`solar_assumed_panel_height_m` setting, default `3` m -- see
+     *Settings* above) as at/below vs. above it. This is **not** a hazard
+     pass/fail classification the way the wind rotor zone is -- ground-
+     mounted panels aren't a rotating strike hazard -- just a
+     height-relative-to-array-top comparison.
 2. **`height_above_mean_sea_level`** or **`height_above_ellipsoid`** --
    neither is height above ground, and the App does not apply a
    ground-elevation correction (that would require fetching a digital
    elevation model, a deliberate scope decision to avoid adding that
-   dependency). These are reported as informational context only --
-   min/median/max recorded height near turbines -- with no zone
-   classification attempted.
+   dependency). For both wind and solar, these are reported as
+   informational context only -- min/median/max recorded height near the
+   infrastructure -- with no classification attempted.
 3. **`height_raw`** is deliberately never used automatically -- per
    Movebank's own field definition its values can be non-numeric and
    study-specific (e.g. `"425, 2D fix"`), too unreliable to parse safely.
@@ -261,17 +319,29 @@ priority order:
 If none of the above are present, or the setting is off, all height columns
 are `NA` and this is logged, not silently ignored.
 
-New CSV columns (all wind-specific): `wind_height_field_used`,
-`wind_height_is_agl`, `n_wind_points_in_rotor_zone` (only ever non-NA when
-`wind_height_is_agl` is `TRUE`), `wind_height_min_m`, `wind_height_median_m`,
-`wind_height_max_m`.
+New CSV columns:
 
-**Important scope note:** height is only evaluated for points already found
-within the horizontal buffer of a turbine. This is a refinement of existing
-horizontal overlap results, not an independent 3D search -- a track that
-never registers as horizontally "near" a turbine (e.g. `buffer_distance_m`
-set too tight) won't have its height checked against that turbine at all,
-regardless of actual flight altitude.
+- **Wind**: `wind_height_field_used`, `wind_height_is_agl`,
+  `n_wind_points_in_rotor_zone` (only ever non-`NA` when `wind_height_is_agl`
+  is `TRUE`), `wind_height_min_m`, `wind_height_median_m`,
+  `wind_height_max_m`.
+- **Solar**: `solar_height_field_used`, `solar_height_is_agl`,
+  `solar_height_min_m`, `solar_height_median_m`, `solar_height_max_m` (all
+  five populated the same way as their wind counterparts, regardless of
+  AGL), plus `solar_assumed_panel_height_m`,
+  `n_solar_points_at_or_below_panel_height`,
+  `n_solar_points_above_panel_height`, and
+  `solar_height_median_relative_to_panel_m` (median fix height minus the
+  assumed panel height; positive = flying above the panels) -- these last
+  four are only ever non-`NA` when `solar_height_is_agl` is `TRUE` **and**
+  `solar_assumed_panel_height_m` resolved to a real value, the solar
+  parallel to wind's AGL gating above.
+
+This same per-point height data also drives three of the PDF report's
+figures (see *Artefacts* above): the wind height-distribution histogram,
+the solar height-vs-panel table, and the solar height-vs-distance scatter.
+That per-point detail isn't written to the CSV -- only the per-track
+summary columns listed above are.
 
 ## Scale and performance
 
@@ -348,10 +418,6 @@ on-disk location an implementation detail of the MoveApps SDK either way:
   exactly one non-hidden file -- `report_template.Rmd`). Resolved in
   `RFunction.R` just before the `rmarkdown::render()` call via
   `resolve_app_file("report_template")`.
-
-Both are *fixed* auxiliary files only -- there's no corresponding
-user-upload option for App users to override either one, since neither is
-derived from or specific to the input tracking data.
 
 ---
 

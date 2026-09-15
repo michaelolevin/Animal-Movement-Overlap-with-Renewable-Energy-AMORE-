@@ -34,6 +34,10 @@ rFunction <- function(data,
                        enable_thinning = FALSE,
                        thinning_max_locations = 5000,
                        include_height_analysis = FALSE,
+                       min_locations = NA_real_,
+                       min_duration_days = NA_real_,
+                       max_fix_interval_hours = NA_real_,
+                       solar_assumed_panel_height_m = 3,
                        ...) {
 
   logger.info("Starting Renewable Energy Infrastructure Overlap App")
@@ -49,7 +53,7 @@ rFunction <- function(data,
 
   study_name <- tryCatch({
     td <- move2::mt_track_data(data)
-    candidates <- c("study_name", "study")
+    candidates <- c("study_name", "study", "name")
     found <- intersect(candidates, names(td))
     if (length(found) > 0) {
       as.character(unique(td[[found[1]]])[1])
@@ -119,6 +123,15 @@ rFunction <- function(data,
         if (height_is_agl) "true AGL, rotor-zone classification enabled" else "not AGL, informational only",
         ")"
       ))
+      if (include_solar && height_is_agl) {
+        logger.info(paste0(
+          "Solar height comparison will use an assumed panel height of ",
+          solar_assumed_panel_height_m,
+          " m (GM-SEUS has no per-array height field; override ",
+          "solar_assumed_panel_height_m if a more accurate value is known ",
+          "for this study's array type/region)"
+        ))
+      }
     }
   }
 
@@ -193,7 +206,7 @@ rFunction <- function(data,
   # Per-track overlap + quality summary
   # -------------------------------------------------------------------------
   n_tracks <- length(track_ids)
-  track_results <- purrr::imap_dfr(track_ids, function(tid, i) {
+  track_outputs <- purrr::imap(track_ids, function(tid, i) {
     logger.info(paste0("Processing track ", i, " of ", n_tracks, " (", tid, ")"))
     track_pts <- data_proj[move2::mt_track_id(data_proj) == tid, ]
     summarize_track(
@@ -206,9 +219,18 @@ rFunction <- function(data,
       enable_thinning   = enable_thinning,
       thinning_max_locations = thinning_max_locations,
       height_field      = height_field,
-      height_is_agl     = height_is_agl
+      height_is_agl     = height_is_agl,
+      panel_height_m    = solar_assumed_panel_height_m
     )
   })
+
+  # summarize_track() now returns list(summary = <1-row tibble>, height_points
+  # = <per-point tibble or NULL>) per track -- unpack each piece separately.
+  # map_dfr()'s NULL-skipping means tracks with no usable height column (or
+  # zero locations) simply contribute no rows to height_points, no special
+  # casing needed here.
+  track_results <- purrr::map_dfr(track_outputs, "summary")
+  height_points <- purrr::map_dfr(track_outputs, "height_points")
 
   # Merge in per-track taxon and place it right after track_id.
   track_results <- track_results %>%
@@ -291,7 +313,11 @@ rFunction <- function(data,
         track_points  = track_points_map,
         wind_pts      = wind_pts,
         solar_polys   = solar_polys,
-        buffer_distance_m = buffer_distance_m
+        buffer_distance_m = buffer_distance_m,
+        height_points = height_points,
+        min_locations = min_locations,
+        min_duration_days = min_duration_days,
+        max_fix_interval_hours = max_fix_interval_hours
       ),
       envir = new.env(),
       quiet = TRUE
@@ -562,7 +588,7 @@ compute_visit_bouts <- function(in_buffer_sorted, timestamps_sorted) {
 summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_polys,
                              buffer_distance_m, enable_thinning = FALSE,
                              thinning_max_locations = 5000, height_field = NA_character_,
-                             height_is_agl = NA) {
+                             height_is_agl = NA, panel_height_m = NA_real_) {
 
   # A track can end up with zero rows if every one of its locations had
   # missing/empty coordinates and was filtered out upstream (see rFunction).
@@ -570,27 +596,36 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
   # crash the whole run.
   if (nrow(track_pts) == 0) {
     logger.warn(paste("Track", track_id, "has zero valid locations after filtering; skipping"))
-    return(tibble::tibble(
-      study_name = study_name, track_id = as.character(track_id),
-      n_locations = 0L, track_start = as.Date(NA), track_end = as.Date(NA),
-      duration_days = NA_real_, median_fix_interval_hours = NA_real_,
-      n_days_monitored = NA_integer_,
-      overlaps_wind = NA, n_turbines_overlap = NA_integer_,
-      n_wind_points_in_buffer = NA_integer_, n_turbines_track_only = NA_integer_,
-      pct_wind_points_in_buffer = NA_real_, pct_wind_days_in_buffer = NA_real_,
-      n_wind_visit_bouts = NA_integer_, wind_longest_buffer_bout_hours = NA_real_,
-      nearest_turbine_dist_m = NA_real_, wind_dist_median_m = NA_real_,
-      wind_temporal_relation = NA_character_,
-      wind_height_field_used = NA_character_, wind_height_is_agl = NA,
-      n_wind_points_in_rotor_zone = NA_integer_,
-      wind_height_min_m = NA_real_, wind_height_median_m = NA_real_, wind_height_max_m = NA_real_,
-      overlaps_solar = NA, n_solar_arrays_overlap = NA_integer_,
-      n_solar_points_in_buffer = NA_integer_, n_solar_arrays_track_only = NA_integer_,
-      pct_solar_points_in_buffer = NA_real_, pct_solar_days_in_buffer = NA_real_,
-      n_solar_visit_bouts = NA_integer_, solar_longest_buffer_bout_hours = NA_real_,
-      nearest_solar_dist_m = NA_real_, solar_dist_median_m = NA_real_,
-      solar_temporal_relation = NA_character_,
-      solar_instYr_confidence_diff = NA_real_
+    return(list(
+      summary = tibble::tibble(
+        study_name = study_name, track_id = as.character(track_id),
+        n_locations = 0L, track_start = as.Date(NA), track_end = as.Date(NA),
+        duration_days = NA_real_, median_fix_interval_hours = NA_real_,
+        n_days_monitored = NA_integer_,
+        overlaps_wind = NA, n_turbines_overlap = NA_integer_,
+        n_wind_points_in_buffer = NA_integer_, n_turbines_track_only = NA_integer_,
+        pct_wind_points_in_buffer = NA_real_, pct_wind_days_in_buffer = NA_real_,
+        n_wind_visit_bouts = NA_integer_, wind_longest_buffer_bout_hours = NA_real_,
+        nearest_turbine_dist_m = NA_real_, wind_dist_median_m = NA_real_,
+        wind_temporal_relation = NA_character_,
+        wind_height_field_used = NA_character_, wind_height_is_agl = NA,
+        n_wind_points_in_rotor_zone = NA_integer_,
+        wind_height_min_m = NA_real_, wind_height_median_m = NA_real_, wind_height_max_m = NA_real_,
+        overlaps_solar = NA, n_solar_arrays_overlap = NA_integer_,
+        n_solar_points_in_buffer = NA_integer_, n_solar_arrays_track_only = NA_integer_,
+        pct_solar_points_in_buffer = NA_real_, pct_solar_days_in_buffer = NA_real_,
+        n_solar_visit_bouts = NA_integer_, solar_longest_buffer_bout_hours = NA_real_,
+        nearest_solar_dist_m = NA_real_, solar_dist_median_m = NA_real_,
+        solar_temporal_relation = NA_character_,
+        solar_instYr_confidence_diff = NA_real_,
+        solar_height_field_used = NA_character_, solar_height_is_agl = NA,
+        solar_height_min_m = NA_real_, solar_height_median_m = NA_real_, solar_height_max_m = NA_real_,
+        solar_assumed_panel_height_m = NA_real_,
+        n_solar_points_at_or_below_panel_height = NA_integer_,
+        n_solar_points_above_panel_height = NA_integer_,
+        solar_height_median_relative_to_panel_m = NA_real_
+      ),
+      height_points = NULL
     ))
   }
 
@@ -633,9 +668,9 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
     NULL
   }
 
-  # Heights aligned 1:1 with overlap_pts, for the wind height check only. 
-  # NULL if height analysis is off or no recognized height column was found 
-  # upstream.
+  # Heights aligned 1:1 with overlap_pts, fed into both the wind and solar
+  # height checks below. NULL if height analysis is off or no recognized
+  # height column was found upstream.
   heights_m <- NULL
   if (!is.na(height_field) && height_field %in% names(overlap_pts)) {
     heights_m <- suppressWarnings(as.numeric(sf::st_drop_geometry(overlap_pts)[[height_field]]))
@@ -655,10 +690,19 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
   # GM-SEUS's instYr already has gaps backfilled from instYrEst (an
   # independent Landsat-derived estimate); passing instYrEst here surfaces
   # how much the two diverge, as a soft confidence signal.
+  #
+  # heights_m/height_is_agl are passed here too (not just to the wind call)
+  # so solar also gets a raw min/median/max height summary for its
+  # buffer-zone fixes. hub_height_field/rotor_diameter_field stay NULL --
+  # solar arrays have no rotor-swept-zone equivalent -- but panel_height_m
+  # is passed instead, enabling the single-assumed-height comparison
+  # summarize_infra_overlap does for solar in place of a zone classification.
   solar_overlap <- summarize_infra_overlap(
     overlap_pts, track_line, solar_polys, buffer_distance_m, year_field = "instYr",
     track_start = track_start, track_end = track_end,
-    est_year_field = "instYrEst"
+    est_year_field = "instYrEst",
+    heights_m = heights_m, height_is_agl = height_is_agl,
+    panel_height_m = panel_height_m
   )
 
   # --- Days-in-buffer and visit-bout metrics, wind and solar ---
@@ -677,7 +721,7 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
   pct_wind_days_in_buffer <- if (n_days_monitored > 0) 100 * wind_days_in_buffer / n_days_monitored else NA_real_
   pct_solar_days_in_buffer <- if (n_days_monitored > 0) 100 * solar_days_in_buffer / n_days_monitored else NA_real_
 
-  tibble::tibble(
+  summary_row <- tibble::tibble(
     study_name = study_name,
     track_id = as.character(track_id),
     n_locations = n_locations,
@@ -714,8 +758,55 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
     nearest_solar_dist_m = solar_overlap$nearest_dist_m,
     solar_dist_median_m = solar_overlap$dist_median_m,
     solar_temporal_relation = solar_overlap$temporal_relation,
-    solar_instYr_confidence_diff = solar_overlap$year_estimate_max_diff
+    solar_instYr_confidence_diff = solar_overlap$year_estimate_max_diff,
+    # Solar gets the same raw min/median/max height summary wind does (see
+    # the heights_m note on the solar_overlap call above); its
+    # classification is against a single assumed panel height instead of a
+    # per-feature rotor-swept zone (see panel_height_m on the solar_overlap
+    # call), so it's reported as at/below vs. above rather than a
+    # rotor-zone-style single count.
+    solar_height_field_used = if (!is.null(heights_m)) height_field else NA_character_,
+    solar_height_is_agl = if (!is.null(heights_m)) height_is_agl else NA,
+    solar_height_min_m = solar_overlap$height_min_m,
+    solar_height_median_m = solar_overlap$height_median_m,
+    solar_height_max_m = solar_overlap$height_max_m,
+    # NA unless height analysis found AGL height AND an assumed panel height
+    # was configured -- see the "True AGL?" gating note on the wind rotor
+    # zone above; the same reasoning applies here.
+    solar_assumed_panel_height_m = if (!is.null(heights_m) && isTRUE(height_is_agl) &&
+                                        !is.na(panel_height_m)) panel_height_m else NA_real_,
+    n_solar_points_at_or_below_panel_height = solar_overlap$n_points_at_or_below_panel,
+    n_solar_points_above_panel_height = solar_overlap$n_points_above_panel,
+    solar_height_median_relative_to_panel_m = solar_overlap$height_median_relative_to_panel_m
   )
+
+  # -------------------------------------------------------------------------
+  # Per-point height/distance detail, for the report's height-relative-to-
+  # infrastructure figures. Only built when height analysis found a usable
+  # column (heights_m non-NULL); one row per tested (post-thinning) fix that
+  # has a non-NA height, aligned against that same fix's distance to the
+  # nearest wind turbine and nearest solar array. wind_in_rotor_zone and
+  # solar_at_or_below_panel are only ever non-NA for AGL height fixes that
+  # also fell within the respective buffer (see summarize_infra_overlap).
+  # -------------------------------------------------------------------------
+  height_points <- if (!is.null(heights_m)) {
+    tibble::tibble(
+      track_id = as.character(track_id),
+      height_m = heights_m,
+      height_is_agl = height_is_agl,
+      wind_dist_m = wind_overlap$point_dist_m,
+      wind_in_buffer = wind_overlap$in_buffer_flags,
+      wind_in_rotor_zone = wind_overlap$in_zone_flags,
+      solar_dist_m = solar_overlap$point_dist_m,
+      solar_in_buffer = solar_overlap$in_buffer_flags,
+      solar_at_or_below_panel = solar_overlap$at_or_below_panel_flags
+    ) %>%
+      dplyr::filter(!is.na(height_m))
+  } else {
+    NULL
+  }
+
+  list(summary = summary_row, height_points = height_points)
 }
 
 #' Shared overlap/distance/temporal-classification logic for one
@@ -750,23 +841,39 @@ summarize_track <- function(track_pts, track_id, study_name, wind_pts, solar_pol
 #'
 #' `heights_m` (aligned 1:1 with `track_pts`), if supplied, enables height
 #' reporting for points within the buffer. Only when `height_is_agl` is TRUE
-#' AND `infra` has both `hub_height_field` and `rotor_diameter_field`
-#' columns is a rotor-swept-zone pass/fail classification computed
-#' (`n_points_in_rotor_zone`) -- otherwise only summary min/median/max
-#' height is reported, deliberately without any zone classification, since
-#' non-AGL height (ellipsoid/MSL) can't be safely compared to a
-#' ground-relative hazard zone without a DEM-based correction this App does
-#' not perform.
+#' does either classification below fire -- non-AGL height (ellipsoid/MSL)
+#' can't be safely compared to a ground-relative reference without a
+#' DEM-based correction this App does not perform, so otherwise only
+#' summary min/median/max height is reported, deliberately without any
+#' classification:
+#'  - AND `infra` has both `hub_height_field` and `rotor_diameter_field`
+#'    columns (wind only): a rotor-swept-zone pass/fail classification is
+#'    computed per point, against THAT point's own nearby turbine(s)
+#'    (`n_points_in_rotor_zone`).
+#'  - AND `panel_height_m` is supplied (solar only): a single assumed panel
+#'    height is compared against every point directly, since GM-SEUS has no
+#'    per-array height field to look up the way USWTDB's hub
+#'    height/rotor diameter can be (`n_points_at_or_below_panel`,
+#'    `n_points_above_panel`). Not a hazard classification the way the
+#'    rotor zone is -- ground-mounted panels aren't a rotating strike
+#'    hazard -- just a height-relative-to-array-top comparison.
 summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distance_m,
                                      year_field, track_start, track_end, est_year_field = NULL,
                                      heights_m = NULL, height_is_agl = NULL,
-                                     hub_height_field = NULL, rotor_diameter_field = NULL) {
+                                     hub_height_field = NULL, rotor_diameter_field = NULL,
+                                     panel_height_m = NULL) {
   empty <- list(overlaps = FALSE, n_overlap = 0L, nearest_dist_m = NA_real_,
                 dist_median_m = NA_real_,
                 temporal_relation = NA_character_, year_estimate_max_diff = NA_real_,
                 n_points_in_buffer = 0L, n_track_only = 0L,
                 in_buffer_flags = logical(nrow(track_pts)),
+                point_dist_m = rep(NA_real_, nrow(track_pts)),
                 n_points_in_rotor_zone = NA_integer_,
+                in_zone_flags = rep(NA, nrow(track_pts)),
+                n_points_at_or_below_panel = NA_integer_,
+                n_points_above_panel = NA_integer_,
+                at_or_below_panel_flags = rep(NA, nrow(track_pts)),
+                height_median_relative_to_panel_m = NA_real_,
                 height_min_m = NA_real_, height_median_m = NA_real_, height_max_m = NA_real_)
   if (is.null(infra) || nrow(infra) == 0 || nrow(track_pts) == 0) return(empty)
 
@@ -833,8 +940,20 @@ summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distanc
     }
   }
 
-  # --- Height (wind-only; NULL heights_m for solar skips all of this) ---
+  # --- Height ---
+  # heights_m is supplied for both wind and solar calls (see summarize_track)
+  # so the raw min/median/max summary below is computed for either layer.
+  # The two classifications below are mutually exclusive per call: the
+  # rotor-swept-zone branch only ever fires when the caller supplies
+  # hub_height_field/rotor_diameter_field (wind only), and the panel-height
+  # branch only when the caller supplies panel_height_m (solar only) --
+  # summarize_track never passes both to the same call.
   n_points_in_rotor_zone <- NA_integer_
+  in_zone_flags <- rep(NA, nrow(track_pts))
+  n_points_at_or_below_panel <- NA_integer_
+  n_points_above_panel <- NA_integer_
+  at_or_below_panel_flags <- rep(NA, nrow(track_pts))
+  height_median_relative_to_panel_m <- NA_real_
   height_min_m <- NA_real_
   height_median_m <- NA_real_
   height_max_m <- NA_real_
@@ -851,6 +970,7 @@ summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distanc
 
       has_turbine_geometry <- !is.null(hub_height_field) && hub_height_field %in% names(infra) &&
         !is.null(rotor_diameter_field) && rotor_diameter_field %in% names(infra)
+      has_assumed_panel_height <- !is.null(panel_height_m) && !is.na(panel_height_m)
 
       if (isTRUE(height_is_agl) && has_turbine_geometry) {
         # Per point within the buffer, check whether its (true AGL) height
@@ -871,10 +991,34 @@ summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distanc
           any(h >= zone_min & h <= zone_max, na.rm = TRUE)
         })
         n_points_in_rotor_zone <- sum(in_zone)
+        # Scattered back to full track length (NA outside the buffer, or
+        # where classification wasn't possible) so this can travel downstream
+        # as a per-point column alongside height_m/distance, aligned 1:1 with
+        # every other per-point vector this function returns.
+        in_zone_flags[in_buffer_idx] <- in_zone
+      } else if (isTRUE(height_is_agl) && has_assumed_panel_height) {
+        # GM-SEUS has no per-array height field to look up (unlike USWTDB's
+        # hub height/rotor diameter), so this compares every buffer-zone
+        # fix's (true AGL) height against a single assumed panel height
+        # instead of a per-feature one. Not a hazard zone -- ground-mounted
+        # panels don't rotate -- just "at/below panel level" vs "above it."
+        at_or_below <- purrr::map_lgl(in_buffer_idx, function(i) {
+          h <- heights_m[i]
+          # Unlike the rotor-zone branch above, NA is preserved here (not
+          # coerced to FALSE) -- this table reports BOTH "at/below" and
+          # "above" as their own counts, so an unclassifiable point has to
+          # stay out of both rather than silently padding "above."
+          if (is.na(h)) return(NA)
+          h <= panel_height_m
+        })
+        n_points_at_or_below_panel <- sum(at_or_below, na.rm = TRUE)
+        n_points_above_panel <- sum(!at_or_below, na.rm = TRUE)
+        at_or_below_panel_flags[in_buffer_idx] <- at_or_below
+        height_median_relative_to_panel_m <- height_median_m - panel_height_m
       }
-      # When height_is_agl is FALSE (ellipsoid/MSL) or turbine geometry is
-      # unavailable, n_points_in_rotor_zone stays NA -- deliberately no
-      # classification is attempted, only the raw height summary above.
+      # When height_is_agl is FALSE (ellipsoid/MSL), or neither turbine
+      # geometry nor an assumed panel height is available, no classification
+      # is attempted -- only the raw height summary above.
     }
   }
 
@@ -888,7 +1032,13 @@ summarize_infra_overlap <- function(track_pts, track_line, infra, buffer_distanc
     n_points_in_buffer = n_points_in_buffer,
     n_track_only = n_track_only,
     in_buffer_flags = lengths(pts_within) > 0,
+    point_dist_m = point_to_nearest_dist,
     n_points_in_rotor_zone = n_points_in_rotor_zone,
+    in_zone_flags = in_zone_flags,
+    n_points_at_or_below_panel = n_points_at_or_below_panel,
+    n_points_above_panel = n_points_above_panel,
+    at_or_below_panel_flags = at_or_below_panel_flags,
+    height_median_relative_to_panel_m = height_median_relative_to_panel_m,
     height_min_m = height_min_m,
     height_median_m = height_median_m,
     height_max_m = height_max_m
