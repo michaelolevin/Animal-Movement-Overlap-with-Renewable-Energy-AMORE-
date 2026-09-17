@@ -51,7 +51,7 @@
       "id": "include_height_analysis",
       "name": "Analyze location height relative to infrastructure",
       "description": "If the input data includes a recognized Movebank height field (height_above_ground_level, height_above_mean_sea_level, or height_above_ellipsoid), reports the height of locations near turbines and solar arrays. Only height_above_ground_level (true height above ground) enables the wind rotor-swept-zone pass/fail classification and the solar at/below-assumed-panel-height comparison; the other fields are reported as informational context only (raw min/median/max height), since they cannot be safely compared to a ground-relative reference without a ground-elevation correction this App does not perform.",
-      "defaultValue": false,
+      "defaultValue": true,
       "type": "CHECKBOX"
     },
     {
