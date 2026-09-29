@@ -2,10 +2,17 @@
 # MoveApps R SDK
 ########################################################################################################################
 
-FROM rocker/geospatial:4.5.1
+FROM rocker/geospatial:4.6.1
 
 LABEL org.opencontainers.image.authors="us@couchbits.com"
 LABEL org.opencontainers.image.vendor="couchbits GmbH"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+# rocker dropped cmake from `geospatial` in 4.5.3. Packages that build a vendored C++ dependency
+# need it -- e.g. s2 builds Abseil with it, and without s2 neither sf nor move2 install.
+    cmake \
+# clean-up
+    && apt-get clean
 
 # Security Aspects
 # Create a non-root user
@@ -48,43 +55,39 @@ COPY --chown=$UID:$GID renv/activate.R renv/settings.dcf ./renv/
 # Restore packages
 RUN R -e 'renv::restore(confirm = FALSE)'
 
-# LaTeX packages needed by the PDF report (data/auxiliary/.../report_template.Rmd).
-# Must run as root: the base image's TeX Live is a *sys*-mode install
-# (/usr/local/texlive, formats in /opt/texlive/texmf-var), which the non-root
-# $USER cannot write to. `fmtutil-sys --all` pre-builds the pdftex/pdflatex
-# format files here, so the first render doesn't try to invoke mktexfmt at
-# runtime as an unprivileged user -- which fails with
-#   "mktexfmt [ERROR]: -user mode but path setup is -sys type, bailing out."
+# LaTeX for the PDF report (data/auxiliary/.../report_template.Rmd, rendered
+# with rmarkdown::pdf_document).
 #
-# The repository is pinned to a frozen TeX Live 2025 snapshot rather than left
-# to the image default. MoveApps builds this app on its own co-pilot-r base
-# image, which does not carry rocker's tlmgr repo pin, so a bare
-# `tlmgr install` there resolves to the live CTAN mirror -- now TeX Live 2026 --
-# and aborts against this TL 2025 install with:
-#   "tlmgr: Local TeX Live (2025) is older than remote repository (2026).
-#    Cross release updates are only supported with update-tlmgr-latest"
+# rocker/geospatial >= 4.6.0 ships no TeX Live any more, so we install TinyTeX
+# (the R Markdown-oriented TeX Live distribution) from the current release.
 #
-# The pin is set with `tlmgr option repository` (persisted to tlmgr's config)
-# rather than a one-off `--repository` flag on this RUN line. A one-off flag
-# only covers this install; it does NOT cover tinytex's automatic runtime
-# package install, which fires if rmarkdown::render() ever hits a missing
-# .sty file and shells out to a plain `tlmgr install` of its own -- that
-# unpinned runtime call is what actually hit the live mirror and failed
-# with the cross-release error above. Persisting the option means every
-# tlmgr invocation, ours or tinytex's, uses this frozen snapshot.
+# On MoveApps this block is executed as root, in the platform's own base image,
+# BEFORE `renv::restore()` has run -- so it must not rely on any R package from
+# renv.lock (e.g. `tinytex::install_tinytex()` fails there with "no package
+# called 'tinytex'"), nor on a particular user, HOME or ENV. It therefore
+# unpacks the prebuilt TinyTeX bundle (what yihui.org/tinytex/install-bin-unix.sh
+# downloads; linux/amd64, which is what MoveApps builds) system-wide into
+# /opt/TinyTeX and symlinks the binaries into /usr/local/bin so pdflatex/tlmgr
+# are on everyone's PATH. The tree is made world-writable (as rocker does for its own TeX Live)
+# so the non-root app user can regenerate formats or font maps at runtime.
 #
-# Note: amssymb.sty (reported missing in the original failure) is not its
-# own TL package -- it ships inside the `amsfonts` bundle below. The
-# original failure wasn't a missing package on this list; the whole
-# `tlmgr install` call was aborting before installing anything, amsfonts
-# included, due to the unpinned cross-release conflict this option fixes.
+# TinyTeX-1 already covers what pandoc's default LaTeX template needs; the extra
+# packages are the ones the report and knitr::kable tables pull in beyond that.
 USER root
-RUN tlmgr option repository https://www.texlive.info/tlnet-archive/2025/10/30/tlnet
-RUN tlmgr install \
-      amsfonts amsmath booktabs caption \
-      float hyperref geometry fancyhdr xcolor titling \
-      parskip setspace enumitem ulem
-RUN fmtutil-sys --all
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends perl xz-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://github.com/rstudio/tinytex-releases/releases/download/daily/TinyTeX-1-linux-x86_64.tar.xz \
+       | tar -xJ -C /opt \
+    && mv /opt/.TinyTeX /opt/TinyTeX \
+    && /opt/TinyTeX/bin/*/tlmgr option sys_bin /usr/local/bin \
+    && /opt/TinyTeX/bin/*/tlmgr postaction install script xetex \
+    && /opt/TinyTeX/bin/*/tlmgr path add \
+    && tlmgr install \
+         booktabs caption multirow float setspace parskip \
+         microtype upquote xurl footnotehyper bookmark \
+         fancyhdr titling enumitem ulem \
+    && chmod -R a+rwX /opt/TinyTeX
 USER $USER
 
 # copy the app

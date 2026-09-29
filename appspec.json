@@ -102,7 +102,8 @@
       { "name": "knitr" },
       { "name": "ggplot2" },
       { "name": "patchwork" },
-      { "name": "scales" }
+      { "name": "scales" },
+      { "name": "shiny" }
     ]
   },
   "license": {
